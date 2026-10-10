@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+
+	"github.com/thezzisu/taper/internal/format"
 )
 
 type request struct {
@@ -31,6 +33,7 @@ func Serve(name string, write bool, in io.Reader, out io.Writer) error {
 	defer d.Close()
 	dec := gob.NewDecoder(in)
 	enc := gob.NewEncoder(out)
+	readBuffer := make([]byte, format.BlockSize)
 	for {
 		var q request
 		if e = dec.Decode(&q); e == io.EOF {
@@ -50,11 +53,15 @@ func Serve(name string, write bool, in io.Reader, out io.Writer) error {
 		case "end":
 			err = d.End()
 		case "read":
-			r.Data, err = d.ReadRecord()
+			var n int
+			n, err = d.ReadRecordInto(readBuffer)
+			r.Data = readBuffer[:n]
 		case "write":
 			err = d.WriteRecord(q.Data)
 		case "filemark":
 			err = d.Filemark()
+		case "flush":
+			err = d.Flush()
 		case "key":
 			err = d.SetKey(q.Data)
 			clear(q.Data)
@@ -148,9 +155,38 @@ func (w *Worker) Position() (uint64, error)   { r, e := w.call(request{Op: "posi
 func (w *Worker) Locate(p uint64) error       { _, e := w.call(request{Op: "locate", Pos: p}); return e }
 func (w *Worker) End() error                  { _, e := w.call(request{Op: "end"}); return e }
 func (w *Worker) ReadRecord() ([]byte, error) { r, e := w.call(request{Op: "read"}); return r.Data, e }
-func (w *Worker) WriteRecord(b []byte) error  { _, e := w.call(request{Op: "write", Data: b}); return e }
-func (w *Worker) Filemark() error             { _, e := w.call(request{Op: "filemark"}); return e }
-func (w *Worker) SetKey(b []byte) error       { _, e := w.call(request{Op: "key", Data: b}); return e }
+func (w *Worker) ReadRecordInto(b []byte) (int, error) {
+	if len(b) != format.BlockSize {
+		return 0, errors.New("record buffer must be 1 MiB")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if e := w.enc.Encode(request{Op: "read"}); e != nil {
+		return 0, e
+	}
+	r := response{Data: b[:0]}
+	if e := w.dec.Decode(&r); e != nil {
+		return 0, e
+	}
+	if r.Error != "" {
+		return 0, errors.New(r.Error)
+	}
+	if r.Code == 1 {
+		return 0, ErrEnd
+	}
+	if r.Code == 2 {
+		return 0, ErrFilemark
+	}
+	if len(r.Data) > len(b) {
+		return 0, errors.New("oversize tape record")
+	}
+	copy(b, r.Data)
+	return len(r.Data), nil
+}
+func (w *Worker) WriteRecord(b []byte) error { _, e := w.call(request{Op: "write", Data: b}); return e }
+func (w *Worker) Filemark() error            { _, e := w.call(request{Op: "filemark"}); return e }
+func (w *Worker) Flush() error               { _, e := w.call(request{Op: "flush"}); return e }
+func (w *Worker) SetKey(b []byte) error      { _, e := w.call(request{Op: "key", Data: b}); return e }
 func (w *Worker) Close() error {
 	_, e := w.call(request{Op: "close"})
 	w.input.Close()

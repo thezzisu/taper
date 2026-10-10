@@ -28,9 +28,13 @@ type Device interface {
 	ReadRecord() ([]byte, error)
 	WriteRecord([]byte) error
 	Filemark() error
+	Flush() error
 	SetKey([]byte) error
 	Close() error
 }
+
+// RecordReader fills a caller-owned buffer, allowing a bounded reusable read pool.
+type RecordReader interface{ ReadRecordInto([]byte) (int, error) }
 
 // Identity is a redundant public bootstrap in cartridge memory, not a directory index.
 type Identity interface {

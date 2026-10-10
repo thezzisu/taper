@@ -24,6 +24,7 @@ type pipeline struct {
 	done      chan struct{}
 	err       error
 	poolBytes int64
+	logical   int64
 }
 
 func poolCount(memory, logical int64) (int, error) {
@@ -50,7 +51,7 @@ func newPipeline(ctx context.Context, memory, logical int64, produce producer) (
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	p := &pipeline{ctx: ctx, cancel: cancel, free: make(chan []byte, count), ready: make(chan chunk, count), done: make(chan struct{}), poolBytes: int64(count) * format.PayloadSize}
+	p := &pipeline{ctx: ctx, cancel: cancel, free: make(chan []byte, count), ready: make(chan chunk, count), done: make(chan struct{}), poolBytes: int64(count) * format.PayloadSize, logical: logical}
 	for i := 0; i < count; i++ {
 		p.free <- make([]byte, 0, format.PayloadSize)
 	}
@@ -60,6 +61,14 @@ func newPipeline(ctx context.Context, memory, logical int64, produce producer) (
 
 // Fill happens before the first tape write. One buffer remains available to the producer.
 func (p *pipeline) Fill() error {
+	if p.logical <= p.poolBytes {
+		select {
+		case <-p.ctx.Done():
+			return p.ctx.Err()
+		case <-p.done:
+			return p.err
+		}
+	}
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for len(p.ready) < max(1, cap(p.ready)-1) {
@@ -72,6 +81,23 @@ func (p *pipeline) Fill() error {
 		}
 	}
 	return nil
+}
+
+// Refill before the queue empties. The drive is synchronized while enough host
+// data still remains to avoid a reactive empty-buffer stop.
+func (p *pipeline) Refill(flush func() error) (bool, error) {
+	select {
+	case <-p.done:
+		return false, p.err
+	default:
+	}
+	if len(p.ready) >= max(1, cap(p.ready)/8) {
+		return false, nil
+	}
+	if e := flush(); e != nil {
+		return false, e
+	}
+	return true, p.Fill()
 }
 
 // Next returns only actual consumer wait time, excluding time spent in device writes.

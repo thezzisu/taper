@@ -2,6 +2,7 @@ package media
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"io"
 	"path/filepath"
@@ -91,5 +92,19 @@ func TestSenseParsing(t *testing.T) {
 	s = parseSense(b)
 	if !s.mark {
 		t.Fatal(s)
+	}
+	b = make([]byte, 24)
+	b[0] = 0x72
+	b[7] = 16
+	b[8] = 0
+	b[9] = 10
+	b[10] = 128
+	binary.BigEndian.PutUint64(b[12:20], ^uint64(0))
+	b[20] = 4
+	b[21] = 2
+	b[23] = 32
+	s = parseSense(b)
+	if !s.valid || !s.ili || s.diff != -1 {
+		t.Fatal("descriptor overlength must not be silently truncated", s)
 	}
 }

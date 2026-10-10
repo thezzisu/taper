@@ -56,7 +56,7 @@ func Browse(m engine.Manifest, reps []engine.Replica, in io.Reader, out io.Write
 		for _, r := range reps {
 			fmt.Fprintf(out, "  %s [%s] verified=%t\n", r.Label, r.Media, r.Verified)
 		}
-		fmt.Fprint(out, "\n编号进入目录，u 上一级，p 显示当前恢复命令，q 退出： ")
+		fmt.Fprint(out, "\n编号进入目录，u 上一级，p 查看详情，q 退出： ")
 		line, e := reader.ReadString('\n')
 		if e != nil {
 			return e
@@ -74,7 +74,7 @@ func Browse(m engine.Manifest, reps []engine.Replica, in io.Reader, out io.Write
 				prefix += "/"
 			}
 		case "p":
-			writeCommands(out, m.ID.String(), strings.TrimSuffix(prefix, "/"))
+			writeDetails(out, m, strings.TrimSuffix(prefix, "/"))
 			fmt.Fprint(out, "Enter 返回： ")
 			reader.ReadString('\n')
 		default:
@@ -84,7 +84,7 @@ func Browse(m engine.Manifest, reps []engine.Replica, in io.Reader, out io.Write
 				if child.dir {
 					prefix += child.name + "/"
 				} else {
-					writeCommands(out, m.ID.String(), prefix+child.name)
+					writeDetails(out, m, prefix+child.name)
 					fmt.Fprint(out, "Enter 返回： ")
 					reader.ReadString('\n')
 				}
@@ -93,10 +93,20 @@ func Browse(m engine.Manifest, reps []engine.Replica, in io.Reader, out io.Write
 	}
 }
 
-func writeCommands(out io.Writer, batch, prefix string) {
-	suffix := ""
-	if prefix != "" {
-		suffix = " '" + strings.ReplaceAll(prefix, "'", "'\\''") + "'"
+func writeDetails(out io.Writer, m engine.Manifest, prefix string) {
+	fmt.Fprintf(out, "\nArchive: %s\nPath: /%s\n", m.ID.String(), prefix)
+	count := 0
+	var size int64
+	for _, c := range m.Contents {
+		for _, f := range c.Files {
+			if prefix == "" || f.Path == prefix || strings.HasPrefix(f.Path, prefix+"/") {
+				count++
+				size += c.Size
+				if f.Path == prefix {
+					fmt.Fprintf(out, "SHA-256: %s\nStream offset: %d\n", c.Hash, c.Data)
+				}
+			}
+		}
 	}
-	fmt.Fprintf(out, "\ntaper restore --plan --batch %s%s\ntaper restore --batch %s --device /dev/sg1 --dest /path/to/restore%s\n", batch, suffix, batch, suffix)
+	fmt.Fprintf(out, "Files: %d; bytes: %d\n", count, size)
 }

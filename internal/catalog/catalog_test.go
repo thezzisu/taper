@@ -7,6 +7,41 @@ import (
 	"testing"
 )
 
+func TestVersionOneMigrationPreservesCatalog(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "catalog.db")
+	pass := []byte("migration test")
+	s, e := Create(name, pass)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.DB.Exec("INSERT INTO media VALUES('id','label','serial',100,90,'time','open','key-id',?)", []byte{1, 2, 3}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.DB.Exec("DROP TABLE stage_files; DROP TABLE stage_exclusions; DROP TABLE stage; UPDATE schema_version SET version=1"); e != nil {
+		t.Fatal(e)
+	}
+	s.Close()
+	s, e = Open(name, pass)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer s.Close()
+	var version, count int
+	var key []byte
+	if e = s.DB.QueryRow("SELECT version FROM schema_version").Scan(&version); e != nil || version != 2 {
+		t.Fatal(version, e)
+	}
+	if e = s.DB.QueryRow("SELECT key FROM media WHERE serial='serial'").Scan(&key); e != nil || !bytes.Equal(key, []byte{1, 2, 3}) {
+		t.Fatal("media/key lost in migration", e)
+	}
+	if e = s.DB.QueryRow("SELECT COUNT(*) FROM stage_files").Scan(&count); e != nil || count != 0 {
+		t.Fatal(count, e)
+	}
+	if e = s.Integrity(); e != nil {
+		t.Fatal(e)
+	}
+}
+
 func TestEncryptionRekeyExport(t *testing.T) {
 	name := filepath.Join(t.TempDir(), "catalog.db")
 	s, e := Create(name, []byte("correct"))

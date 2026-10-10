@@ -15,7 +15,7 @@ func TestBrowseRootAndPrefix(t *testing.T) {
 		t.Fatal(e)
 	}
 	s := out.String()
-	if !strings.Contains(s, "--batch "+m.ID.String()+" 'dir'") || strings.Contains(s, "--batch "+m.ID.String()+" \"\"") {
-		t.Fatal("bad restore guidance", s)
+	if !strings.Contains(s, "Archive: "+m.ID.String()) || !strings.Contains(s, "Path: /dir") || strings.Contains(s, "taper restore") {
+		t.Fatal("bad offline details", s)
 	}
 }

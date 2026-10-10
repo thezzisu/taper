@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type InventoryFile struct {
@@ -28,9 +29,14 @@ type Inventory struct {
 	ExcludedBytes int64           `json:"excluded_bytes"`
 	ExcludedFiles int             `json:"excluded_files"`
 	Identity      SourceIdentity  `json:"identity"`
+	Excluded      []Exclusion     `json:"excluded,omitempty"`
 }
 
 func InspectFiles(ctx context.Context, root string, rules policy.Rules) (v Inventory, err error) {
+	return InspectPaths(ctx, root, rules, []string{"."})
+}
+
+func InspectPaths(ctx context.Context, root string, rules policy.Rules, paths []string) (v Inventory, err error) {
 	if err = rules.Validate(); err != nil {
 		return
 	}
@@ -49,8 +55,8 @@ func InspectFiles(ctx context.Context, root string, rules policy.Rules) (v Inven
 	if v.Identity, err = IdentifySource(root); err != nil {
 		return
 	}
-	seen := map[string]bool{}
-	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, e error) error {
+	seen := map[string]string{}
+	visit := func(p string, d fs.DirEntry, e error) error {
 		if e != nil {
 			return e
 		}
@@ -72,6 +78,7 @@ func InspectFiles(ctx context.Context, root string, rules policy.Rules) (v Inven
 		if !rules.Keep(canonical) {
 			v.ExcludedFiles++
 			v.ExcludedBytes += info.Size()
+			v.Excluded = append(v.Excluded, Exclusion{Path: canonical, Size: info.Size(), Reason: "rule"})
 			return nil
 		}
 		if e = format.ValidPath(canonical); e != nil {
@@ -82,17 +89,29 @@ func InspectFiles(ctx context.Context, root string, rules policy.Rules) (v Inven
 			v.Issues = append(v.Issues, Issue{canonical, "not a regular file: " + info.Mode().String()})
 			return nil
 		}
-		if seen[canonical] {
+		if old, ok := seen[canonical]; ok {
+			if old == rel {
+				return nil
+			}
 			return fmt.Errorf("normalized path collision: %s", canonical)
 		}
-		seen[canonical] = true
+		seen[canonical] = rel
 		v.Bytes += info.Size()
 		if v.Bytes < 0 {
 			return fmt.Errorf("source size overflow")
 		}
 		v.Files = append(v.Files, InventoryFile{canonical, rel, info.Size(), info.ModTime().UnixNano()})
 		return nil
-	})
+	}
+	for _, p := range paths {
+		p = filepath.Clean(p)
+		if filepath.IsAbs(p) || p == ".." || strings.HasPrefix(p, ".."+string(filepath.Separator)) {
+			return v, fmt.Errorf("path must be relative to source: %s", p)
+		}
+		if err = filepath.WalkDir(filepath.Join(root, p), visit); err != nil {
+			return
+		}
+	}
 	if err == nil && len(v.Files) == 0 && v.ExcludedFiles == 0 {
 		err = fmt.Errorf("source directory %s is empty; check that the filesystem is mounted", root)
 	}

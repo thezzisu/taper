@@ -3,16 +3,11 @@ package engine
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"math"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/thezzisu/taper/internal/format"
-	"golang.org/x/sys/unix"
 )
 
 type SupplyResult struct {
@@ -112,74 +107,4 @@ func probeSupply(ctx context.Context, m Manifest, memory int64, rate float64, co
 		return r, errors.New("producer length differs from manifest")
 	}
 	return r, nil
-}
-
-// Spool streams the raw packed payload to an atomic regular-file artifact for local tests.
-// This is diagnostic output, not a tape image. It is only published after hash checks and fsync.
-func Spool(ctx context.Context, m Manifest, dst string, memory int64) (n int64, blocks uint64, err error) {
-	if err = checkDestOutsideSource(m.Source, dst); err != nil {
-		return
-	}
-	p, err := newPipeline(ctx, memory, m.Logical, func(ctx context.Context, free chan []byte, ready chan chunk) error {
-		return Produce(ctx, m, free, ready)
-	})
-	if err != nil {
-		return
-	}
-	defer p.Close()
-	dir := filepath.Dir(dst)
-	var stats unix.Statfs_t
-	if err = unix.Statfs(dir, &stats); err != nil {
-		return
-	}
-	available := uint64(stats.Bavail) * uint64(stats.Bsize)
-	if uint64(m.Logical) > available-available/10 {
-		return 0, 0, fmt.Errorf("spool needs %d bytes with 10%% free-space reserve; available %d", m.Logical, available)
-	}
-	if _, e := os.Lstat(dst); !os.IsNotExist(e) {
-		return 0, 0, errors.New("spool target exists or cannot be inspected")
-	}
-	f, err := os.CreateTemp(dir, ".taper-spool-*")
-	if err != nil {
-		return
-	}
-	defer func() { f.Close(); os.Remove(f.Name()) }()
-	for {
-		c, ok, _, e := p.Next(0)
-		if e != nil {
-			return n, blocks, e
-		}
-		if !ok {
-			break
-		}
-		written, e := f.Write(c.b)
-		if e != nil {
-			return n, blocks, e
-		}
-		if written != len(c.b) {
-			return n, blocks, io.ErrShortWrite
-		}
-		n += int64(written)
-		blocks++
-		p.Release(c)
-	}
-	if n != m.Logical {
-		return n, blocks, errors.New("spool size differs from manifest")
-	}
-	if err = f.Sync(); err != nil {
-		return
-	}
-	if err = f.Close(); err != nil {
-		return
-	}
-	if err = os.Link(f.Name(), dst); err != nil {
-		return
-	}
-	df, e := os.Open(dir)
-	if e != nil {
-		return n, blocks, e
-	}
-	defer df.Close()
-	err = df.Sync()
-	return
 }

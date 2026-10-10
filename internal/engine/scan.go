@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -85,11 +84,16 @@ func ScanProgress(ctx context.Context, root, name string, rules policy.Rules, pr
 	return ScanCached(ctx, root, name, rules, progress, nil)
 }
 func ScanCached(ctx context.Context, root, name string, rules policy.Rules, progress func(int64), cache *HashCache) (m Manifest, err error) {
-	var readBytes int64
 	inventory, e := InspectFiles(ctx, root, rules)
 	if e != nil {
 		return m, e
 	}
+	return scanInventory(ctx, inventory, name, rules, progress, cache)
+}
+
+func scanInventory(ctx context.Context, inventory Inventory, name string, rules policy.Rules, progress func(int64), cache *HashCache) (m Manifest, err error) {
+	var readBytes int64
+	root := inventory.Root
 	if len(inventory.Issues) > 0 {
 		return m, fmt.Errorf("source preflight: %d unsupported entries; first: %s", len(inventory.Issues), inventory.Issues[0].Path)
 	}
@@ -102,6 +106,7 @@ func ScanCached(ctx context.Context, root, name string, rules policy.Rules, prog
 	}
 	m = Manifest{ID: format.NewID(), Name: name, Source: root, Created: time.Now().UTC().Format(time.RFC3339), Rules: rules}
 	m.SourceIdentity = inventory.Identity
+	m.Excluded = inventory.Excluded
 	byHash := map[string]int{}
 	buffer := make([]byte, 4<<20)
 	secure, err := os.OpenRoot(root)
@@ -112,35 +117,11 @@ func ScanCached(ctx context.Context, root, name string, rules policy.Rules, prog
 		return m, err
 	}
 	defer secure.Close()
-	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, e error) error {
-		if e != nil {
+	visit := func(item InventoryFile) error {
+		if e := ctx.Err(); e != nil {
 			return e
 		}
-		if e = ctx.Err(); e != nil {
-			return e
-		}
-		if p == root || d.IsDir() {
-			return nil
-		}
-		rel, e := filepath.Rel(root, p)
-		if e != nil {
-			return e
-		}
-		canonical := format.Normalize(filepath.ToSlash(rel))
-		if e = format.ValidPath(canonical); e != nil {
-			return e
-		}
-		info, e := d.Info()
-		if e != nil {
-			return e
-		}
-		if !rules.Keep(canonical) {
-			m.Excluded = append(m.Excluded, Exclusion{canonical, info.Size(), "rule"})
-			return nil
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("unsupported entry %q: exclude or materialize it", canonical)
-		}
+		rel, canonical := item.Source, item.Path
 		f, e := secure.Open(rel)
 		if e != nil {
 			return e
@@ -149,6 +130,10 @@ func ScanCached(ctx context.Context, root, name string, rules policy.Rules, prog
 		if e != nil {
 			f.Close()
 			return e
+		}
+		if before.Size() != item.Size || before.ModTime().UnixNano() != item.MTime {
+			f.Close()
+			return fmt.Errorf("source changed since selection; add it again: %s", canonical)
 		}
 		h := sha256.New()
 		hash := ""
@@ -202,7 +187,12 @@ func ScanCached(ctx context.Context, root, name string, rules policy.Rules, prog
 		m.Contents[idx].Files = append(m.Contents[idx].Files, File{canonical, rel, before.ModTime().UnixNano()})
 		m.Files++
 		return nil
-	})
+	}
+	for _, item := range inventory.Files {
+		if err = visit(item); err != nil {
+			return m, err
+		}
+	}
 	if err != nil {
 		return m, err
 	}

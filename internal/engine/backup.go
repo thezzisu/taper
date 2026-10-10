@@ -46,64 +46,6 @@ func control(d media.Device, kind byte, id format.ID, v any) error {
 	}
 	return d.WriteRecord(r)
 }
-func LabelMedia(s *catalog.Store, d media.Device, name string, key []byte, saveKey bool) (l Label, err error) {
-	if len(name) == 0 || len(name) > 64 {
-		return l, errors.New("media label must be 1–64 UTF-8 bytes")
-	}
-	info, err := d.Info()
-	if err != nil {
-		return
-	}
-	if err = checkMediaInfo(info); err != nil {
-		return
-	}
-	if err = d.Locate(0); err != nil {
-		return
-	}
-	_, err = d.ReadRecord()
-	if err != io.EOF {
-		return l, errors.New("initialization requires empty media; existing data will not be overwritten")
-	}
-	if err = d.SetKey(nil); err != nil {
-		return
-	}
-	if err = d.Locate(0); err != nil {
-		return
-	}
-	l = Label{ID: format.NewID().String(), Name: name, Serial: info.Serial, Version: 1}
-	if len(key) > 0 {
-		l.KeyID = media.KeyID(key)
-	}
-	id, _ := format.ParseID(l.ID)
-	if err = control(d, format.Media, id, l); err != nil {
-		return
-	}
-	if err = d.Filemark(); err != nil {
-		return
-	}
-	if err = d.SetKey(key); err != nil {
-		return
-	}
-	info, err = d.Info()
-	if err != nil {
-		return
-	}
-	var stored []byte
-	if saveKey {
-		stored = key
-	}
-	_, err = s.DB.Exec("INSERT INTO media VALUES(?,?,?,?,?,?,?,?,?)", l.ID, l.Name, l.Serial, info.Total, info.Remaining, time.Now().UTC().Format(time.RFC3339), "open", l.KeyID, stored)
-	if err == nil {
-		if err = recordMediaInfo(s, l.ID, info); err != nil {
-			return l, err
-		}
-		if identity, ok := d.(media.Identity); ok {
-			public, _ := json.Marshal([]string{l.ID, l.Name, l.KeyID})
-			err = identity.WriteIdentity(append([]byte("taper1:"), public...))
-		}
-	}
-	return
-}
 func ReadLabel(d media.Device) (l Label, err error) {
 	if identity, ok := d.(media.Identity); ok {
 		if b, e := identity.ReadIdentity(); e == nil && len(b) > 7 && string(b[:7]) == "taper1:" {
@@ -114,9 +56,6 @@ func ReadLabel(d media.Device) (l Label, err error) {
 				}
 				info, e := d.Info()
 				if e != nil {
-					return l, e
-				}
-				if e = d.Locate(1); e != nil {
 					return l, e
 				}
 				return Label{ID: fields[0], Name: fields[1], Serial: info.Serial, KeyID: fields[2], Version: 1}, nil
@@ -159,12 +98,15 @@ func UnlockMedia(s *catalog.Store, d media.Device, provided []byte) (l Label, er
 		return l, errors.New("media serial mismatch")
 	}
 	var key []byte
-	var keyID, state string
-	err = s.DB.QueryRow("SELECT key,key_id,state FROM media WHERE id=?", l.ID).Scan(&key, &keyID, &state)
+	var keyID, serial string
+	err = s.DB.QueryRow("SELECT key,key_id,serial FROM media WHERE id=?", l.ID).Scan(&key, &keyID, &serial)
 	if err != nil {
 		return
 	}
 	defer func() { clear(key) }()
+	if serial != info.Serial {
+		return l, errors.New("catalog cartridge serial mismatch")
+	}
 	if keyID != l.KeyID {
 		return l, errors.New("catalog/media key mismatch")
 	}
@@ -200,6 +142,7 @@ type WriteOptions struct {
 	ProbeMBps   float64
 	MaxWait     time.Duration
 	Underflow   func(time.Duration)
+	Pause       func()
 }
 type chunk struct {
 	b     []byte
@@ -329,7 +272,10 @@ func Produce(ctx context.Context, m Manifest, free chan []byte, ready chan chunk
 	}
 	return p.flush()
 }
-func Backup(ctx context.Context, s *catalog.Store, d media.Device, m Manifest, key []byte, o WriteOptions) (rep string, err error) {
+func WriteArchive(ctx context.Context, s *catalog.Store, d media.Device, m Manifest, key []byte, o WriteOptions) (rep string, err error) {
+	if err = ctx.Err(); err != nil {
+		return
+	}
 	if err = ValidateManifest(m); err != nil {
 		return
 	}
@@ -342,7 +288,7 @@ func Backup(ctx context.Context, s *catalog.Store, d media.Device, m Manifest, k
 		return
 	}
 	if o.ProbeMBps > 0 {
-		probe, e := ProbeSupply(ctx, m, o.Memory, o.ProbeMBps)
+		probe, e := probeSupply(ctx, m, o.Memory, o.ProbeMBps, o.Zstd, nil)
 		if e != nil {
 			return "", fmt.Errorf("supply probe failed: %w", e)
 		}
@@ -361,7 +307,7 @@ func Backup(ctx context.Context, s *catalog.Store, d media.Device, m Manifest, k
 		return "", err
 	}
 
-	l, err := UnlockMedia(s, d, key)
+	l, err := prepareMedia(s, d, key)
 	if err != nil {
 		return
 	}
@@ -427,6 +373,13 @@ func Backup(ctx context.Context, s *catalog.Store, d media.Device, m Manifest, k
 	out := make([]byte, 0, format.BlockSize+4096)
 	var seq uint64
 	for {
+		paused, e := pipeline.Refill(d.Flush)
+		if e != nil {
+			return rep, e
+		}
+		if paused && o.Pause != nil {
+			o.Pause()
+		}
 		c, ok, wait, e := pipeline.Next(o.MaxWait)
 		if e != nil {
 			return rep, e
@@ -464,9 +417,17 @@ func Backup(ctx context.Context, s *catalog.Store, d media.Device, m Manifest, k
 	if err = d.Filemark(); err != nil {
 		return
 	}
-	_, err = s.DB.Exec("UPDATE replicas SET state='committed',commit_pos=?,blocks=? WHERE id=?", commitPos, seq, rep)
-	if err == nil {
-		_, err = s.DB.Exec("UPDATE batches SET state='committed' WHERE id=?", m.ID.String())
+	tx, e := s.DB.Begin()
+	if e != nil {
+		return rep, e
 	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("UPDATE replicas SET state='committed',commit_pos=?,blocks=? WHERE id=?", commitPos, seq, rep); err != nil {
+		return
+	}
+	if _, err = tx.Exec("UPDATE batches SET state='committed' WHERE id=?", m.ID.String()); err != nil {
+		return
+	}
+	err = tx.Commit()
 	return
 }

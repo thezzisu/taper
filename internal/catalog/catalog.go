@@ -143,7 +143,7 @@ func connect(name string, key []byte) (*Store, error) {
 		if e = db.QueryRow("SELECT COUNT(*),COALESCE(MIN(version),0),COALESCE(MAX(version),0) FROM schema_version").Scan(&count, &low, &high); e != nil {
 			return fail(e)
 		}
-		if count != 1 || low != 1 || high != 1 {
+		if count != 1 || low != high || low < 1 || high > 2 {
 			return fail(errors.New("unsupported catalog schema version"))
 		}
 	}
@@ -257,7 +257,7 @@ func (s *Store) Integrity() error {
 
 const schema = `
 CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);
-INSERT INTO schema_version SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM schema_version);
+INSERT INTO schema_version SELECT 2 WHERE NOT EXISTS(SELECT 1 FROM schema_version);
 CREATE TABLE IF NOT EXISTS media(id TEXT PRIMARY KEY,label TEXT NOT NULL,serial TEXT NOT NULL UNIQUE,total INTEGER NOT NULL,remaining INTEGER NOT NULL,sampled TEXT NOT NULL,state TEXT NOT NULL,key_id TEXT NOT NULL,key BLOB);
 CREATE TABLE IF NOT EXISTS batches(id TEXT PRIMARY KEY,name TEXT NOT NULL,source TEXT NOT NULL,created TEXT NOT NULL,rules TEXT NOT NULL,digest TEXT NOT NULL,logical_bytes INTEGER NOT NULL,files INTEGER NOT NULL,required_replicas INTEGER NOT NULL DEFAULT 1,state TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS contents(batch_id TEXT NOT NULL REFERENCES batches(id),ordinal INTEGER NOT NULL,size INTEGER NOT NULL,hash TEXT NOT NULL,meta_offset INTEGER NOT NULL,data_offset INTEGER NOT NULL,PRIMARY KEY(batch_id,ordinal));
@@ -270,4 +270,8 @@ CREATE TABLE IF NOT EXISTS scan_cache(root TEXT NOT NULL,path TEXT NOT NULL,fsid
 CREATE TABLE IF NOT EXISTS scan_checkpoints(root TEXT NOT NULL,path TEXT NOT NULL,fsid TEXT NOT NULL,device INTEGER NOT NULL,inode INTEGER NOT NULL,size INTEGER NOT NULL,mtime INTEGER NOT NULL,ctime INTEGER NOT NULL,offset INTEGER NOT NULL,state BLOB NOT NULL,PRIMARY KEY(root,path));
 CREATE TABLE IF NOT EXISTS batch_sources(batch_id TEXT PRIMARY KEY REFERENCES batches(id),device INTEGER NOT NULL,inode INTEGER NOT NULL,fsid TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS media_health(media_id TEXT PRIMARY KEY REFERENCES media(id),unhealthy INTEGER NOT NULL,info TEXT NOT NULL,sampled TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS stage(id INTEGER PRIMARY KEY CHECK(id=1),source TEXT NOT NULL,identity TEXT NOT NULL,rules TEXT NOT NULL,plan_id TEXT REFERENCES batches(id));
+CREATE TABLE IF NOT EXISTS stage_files(path TEXT PRIMARY KEY,source_path TEXT NOT NULL,size INTEGER NOT NULL,mtime INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS stage_exclusions(path TEXT PRIMARY KEY,size INTEGER NOT NULL,reason TEXT NOT NULL);
+UPDATE schema_version SET version=2;
 `

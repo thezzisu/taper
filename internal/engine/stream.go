@@ -19,6 +19,7 @@ type batchStream struct {
 	position uint64
 	pending  []byte
 	ctx      context.Context
+	short    bool
 }
 
 func (s *batchStream) Read(p []byte) (int, error) {
@@ -29,7 +30,9 @@ func (s *batchStream) Read(p []byte) (int, error) {
 		return 0, e
 	}
 	if len(s.pending) == 0 {
-		pos := s.position
+		if s.short {
+			return 0, errors.New("short DATA record before stream end")
+		}
 		b, e := s.d.ReadRecord()
 		s.position++
 		if e != nil {
@@ -41,12 +44,15 @@ func (s *batchStream) Read(p []byte) (int, error) {
 		}
 		if f.Kind != format.Data || f.Batch != s.batch || f.Seq != s.seq || len(f.Payload) == 0 {
 			if f.Kind == format.Begin {
-				s.d.Locate(pos)
+				if r, ok := s.d.(*sequentialReader); ok {
+					r.unread(b)
+				}
 			}
 			return 0, errors.New("invalid sequential data record")
 		}
 		s.seq++
 		s.pending = f.Payload
+		s.short = len(f.Payload) < format.PayloadSize
 	}
 	n := copy(p, s.pending)
 	s.pending = s.pending[n:]

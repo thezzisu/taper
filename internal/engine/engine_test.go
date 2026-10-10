@@ -3,6 +3,8 @@ package engine
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -53,7 +55,7 @@ func TestRoundTripAndReindex(t *testing.T) {
 			s, d, root := setup(t)
 			expected := makeSource(t, root)
 			key := bytes.Repeat([]byte{7}, 32)
-			label, e := LabelMedia(s, d, "test", key, true)
+			label, e := RegisterMedia(s, d, "test", key, true)
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -67,7 +69,7 @@ func TestRoundTripAndReindex(t *testing.T) {
 			if e = Save(s, m); e != nil {
 				t.Fatal(e)
 			}
-			rep, e := Backup(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, Zstd: compressed, AllowFrozen: true})
+			rep, e := WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, Zstd: compressed, AllowFrozen: true})
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -75,34 +77,18 @@ func TestRoundTripAndReindex(t *testing.T) {
 			if e != nil || len(rs) != 1 || rs[0].ID != rep || rs[0].Verified {
 				t.Fatal("replica state", rs, e)
 			}
-			dest := filepath.Join(t.TempDir(), "restore")
-			reads, locates, e := Restore(context.Background(), s, d, m, rs[0], dest, nil, nil, false)
-			if e != nil {
-				t.Fatal(e)
-			}
-			if locates != 1 || reads != rs[0].Blocks {
-				t.Fatalf("inefficient restore reads=%d blocks=%d seeks=%d", reads, rs[0].Blocks, locates)
-			}
-			for p, b := range expected {
-				got, e := os.ReadFile(filepath.Join(dest, format.Normalize(p)))
-				if e != nil || !bytes.Equal(got, b) {
-					t.Fatalf("%s differs: %v", p, e)
-				}
-			}
-			if _, _, e = Restore(context.Background(), s, d, m, rs[0], dest, nil, nil, false); e == nil {
-				t.Fatal("overwrote existing targets")
-			}
-			if _, _, e = Restore(context.Background(), s, d, m, rs[0], "", nil, nil, true); e != nil {
-				t.Fatal(e)
+			result, e := ScanTape(context.Background(), s, d, nil, false, ReadOptions{Memory: 8 << 20})
+			if e != nil || !result.ReachedEOD || result.Archives != 1 {
+				t.Fatal(result, e)
 			}
 			fresh, e := catalog.Create(filepath.Join(t.TempDir(), "fresh.db"), []byte("different password"))
 			if e != nil {
 				t.Fatal(e)
 			}
 			defer fresh.Close()
-			n, e := Reindex(context.Background(), fresh, d, key)
-			if e != nil || n != 1 {
-				t.Fatal("reindex", n, e)
+			result, e = ScanTape(context.Background(), fresh, d, key, true, ReadOptions{Memory: 8 << 20})
+			if e != nil || result.Imported != 1 {
+				t.Fatal("reindex", result, e)
 			}
 			recovered, e := Load(fresh, m.ID.String())
 			if e != nil || recovered.Digest != m.Digest {
@@ -112,8 +98,25 @@ func TestRoundTripAndReindex(t *testing.T) {
 			if e != nil || copies[0].Media != label.ID {
 				t.Fatal(e)
 			}
-			if _, _, e = Restore(context.Background(), fresh, d, recovered, copies[0], filepath.Join(t.TempDir(), "recovered"), nil, nil, false); e != nil {
-				t.Fatal(e)
+			for _, c := range recovered.Contents {
+				for _, f := range c.Files {
+					var original []byte
+					found := false
+					for path, data := range expected {
+						if format.Normalize(path) == f.Path {
+							original = data
+							found = true
+							break
+						}
+					}
+					if !found {
+						t.Fatal("unexpected recovered path", f.Path)
+					}
+					hash := sha256.Sum256(original)
+					if hex.EncodeToString(hash[:]) != c.Hash || int64(len(original)) != c.Size {
+						t.Fatal("recovered content identity changed", f.Path)
+					}
+				}
 			}
 			// Same logical batch, independent second-tape replica, no duplicate file tree.
 			otherName := filepath.Join(t.TempDir(), "other.tape")
@@ -123,8 +126,8 @@ func TestRoundTripAndReindex(t *testing.T) {
 				t.Fatal(e)
 			}
 			defer other.Close()
-			LabelMedia(s, other, "second", nil, false)
-			if _, e = Backup(context.Background(), s, other, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e != nil {
+			RegisterMedia(s, other, "second", nil, false)
+			if _, e = WriteArchive(context.Background(), s, other, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e != nil {
 				t.Fatal(e)
 			}
 			rs, _ = Replicas(s, m.ID.String())
@@ -158,32 +161,33 @@ func (d *failDevice) Filemark() error {
 func TestFailuresPreserveOldReplica(t *testing.T) {
 	s, d, root := setup(t)
 	makeSource(t, root)
-	LabelMedia(s, d, "test", nil, false)
+	RegisterMedia(s, d, "test", nil, false)
 	m, e := Scan(context.Background(), root, "batch", policy.Rules{})
 	if e != nil {
 		t.Fatal(e)
 	}
 	Save(s, m)
-	if _, e = Backup(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e != nil {
+	if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e != nil {
 		t.Fatal(e)
 	}
 	for _, fault := range []*failDevice{{Device: d, failAt: 2}, {Device: d, flush: true}} {
-		if _, e = Backup(context.Background(), s, fault, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e == nil {
+		if _, e = WriteArchive(context.Background(), s, fault, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e == nil {
 			t.Fatal("fault ignored")
 		}
 		rs, _ := Replicas(s, m.ID.String())
 		if len(rs) != 1 {
 			t.Fatal("incomplete replica committed")
 		}
-		if _, _, e = Restore(context.Background(), s, d, m, rs[0], "", nil, nil, true); e != nil {
-			t.Fatal("old replica damaged", e)
+		result, e := ScanTape(context.Background(), s, d, nil, false, ReadOptions{Memory: 8 << 20})
+		if result.Archives != 1 || !result.ReachedEOD {
+			t.Fatal("old committed archive not found", result, e)
 		}
 	}
 }
 func TestSourceChangeAndPolicies(t *testing.T) {
 	s, d, root := setup(t)
 	makeSource(t, root)
-	LabelMedia(s, d, "test", nil, false)
+	RegisterMedia(s, d, "test", nil, false)
 	os.Mkdir(filepath.Join(root, "Tmp"), 0700)
 	os.WriteFile(filepath.Join(root, "Tmp", "garbage"), []byte("junk"), 0600)
 	m, e := Scan(context.Background(), root, "batch", policy.Rules{Exclude: []string{"Tmp/**"}})
@@ -194,11 +198,11 @@ func TestSourceChangeAndPolicies(t *testing.T) {
 		t.Fatal("rules")
 	}
 	Save(s, m)
-	if _, e = Backup(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20}); e == nil {
+	if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20}); e == nil {
 		t.Fatal("writable source accepted")
 	}
 	os.WriteFile(filepath.Join(root, "tree", "small.txt"), []byte("HELLO"), 0600)
-	if _, e = Backup(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e == nil || !strings.Contains(e.Error(), "source changed") {
+	if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e == nil || !strings.Contains(e.Error(), "source changed") {
 		t.Fatal("change ignored", e)
 	}
 	rs, _ := Replicas(s, m.ID.String())
@@ -210,16 +214,19 @@ func TestSourceChangeAndPolicies(t *testing.T) {
 func TestReindexSkipsUncommittedTailAndImportsRetry(t *testing.T) {
 	s, d, root := setup(t)
 	makeSource(t, root)
-	LabelMedia(s, d, "test", nil, false)
+	RegisterMedia(s, d, "test", nil, false)
+	if _, e := prepareMedia(s, d, nil); e != nil {
+		t.Fatal(e)
+	}
 	m, e := Scan(context.Background(), root, "test", policy.Rules{})
 	if e != nil {
 		t.Fatal(e)
 	}
 	Save(s, m)
-	if _, e = Backup(context.Background(), s, &failDevice{Device: d, failAt: 2}, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e == nil {
+	if _, e = WriteArchive(context.Background(), s, &failDevice{Device: d, failAt: 2}, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e == nil {
 		t.Fatal("failure ignored")
 	}
-	if _, e = Backup(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e != nil {
+	if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e != nil {
 		t.Fatal(e)
 	}
 	fresh, e := catalog.Create(filepath.Join(t.TempDir(), "fresh.db"), []byte("password"))
@@ -227,9 +234,9 @@ func TestReindexSkipsUncommittedTailAndImportsRetry(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer fresh.Close()
-	n, e := Reindex(context.Background(), fresh, d, nil)
-	if n != 1 || e == nil {
-		t.Fatalf("complete retry not imported, or incomplete tail unreported: %d %v", n, e)
+	result, e := ScanTape(context.Background(), fresh, d, nil, true, ReadOptions{Memory: 8 << 20})
+	if result.Imported != 1 || !result.ReachedEOD || e == nil {
+		t.Fatalf("complete retry not imported, or incomplete tail unreported: %+v %v", result, e)
 	}
 }
 
@@ -255,11 +262,11 @@ func BenchmarkBackupPacked(b *testing.B) {
 		b.Fatal(e)
 	}
 	defer d.Close()
-	LabelMedia(s, d, "bench", nil, false)
+	RegisterMedia(s, d, "bench", nil, false)
 	b.SetBytes(8 << 20)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, e = Backup(context.Background(), s, d, m, nil, WriteOptions{Memory: 16 << 20, AllowFrozen: true}); e != nil {
+		if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 16 << 20, AllowFrozen: true}); e != nil {
 			b.Fatal(e)
 		}
 	}

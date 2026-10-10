@@ -50,7 +50,7 @@ type SG struct {
 type senseError struct {
 	key, asc, ascq byte
 	mark, eom, ili bool
-	diff           int32
+	diff           int64
 	valid          bool
 }
 
@@ -70,7 +70,7 @@ func parseSense(b []byte) *senseError {
 		e.ili = b[2]&32 != 0
 		if len(b) >= 7 {
 			e.valid = b[0]&128 != 0
-			e.diff = int32(binary.BigEndian.Uint32(b[3:7]))
+			e.diff = int64(int32(binary.BigEndian.Uint32(b[3:7])))
 		}
 		if len(b) >= 14 {
 			e.asc = b[12]
@@ -92,6 +92,10 @@ func parseSense(b []byte) *senseError {
 				e.mark = v&128 != 0
 				e.eom = v&64 != 0
 				e.ili = v&32 != 0
+			}
+			if b[off] == 0 && end >= off+12 && b[off+2]&128 != 0 {
+				e.valid = true
+				e.diff = int64(binary.BigEndian.Uint64(b[off+4 : off+12]))
 			}
 			off = end
 		}
@@ -145,6 +149,11 @@ func (s *SG) command(cdb, data []byte, out bool) (int, error) {
 	if len(cdb) == 0 {
 		return 0, errors.New("empty CDB")
 	}
+	release, e := protectTapeIO()
+	if e != nil {
+		return 0, e
+	}
+	defer release()
 	sense := make([]byte, 64)
 	h := sgHeader{Interface: 'S', Direction: -1, CmdLen: uint8(len(cdb)), SenseMax: 64, Cmd: uintptr(unsafe.Pointer(&cdb[0])), Sense: uintptr(unsafe.Pointer(&sense[0])), Timeout: 900000}
 	if len(data) > 0 {
@@ -198,6 +207,13 @@ func (s *SG) Locate(pos uint64) error {
 func (s *SG) End() error { _, e := s.command([]byte{0x11, 3, 0, 0, 0, 0}, nil, false); return e }
 func (s *SG) ReadRecord() ([]byte, error) {
 	b := make([]byte, format.BlockSize)
+	n, e := s.ReadRecordInto(b)
+	return b[:n], e
+}
+func (s *SG) ReadRecordInto(b []byte) (int, error) {
+	if len(b) != format.BlockSize {
+		return 0, errors.New("record buffer must be 1 MiB")
+	}
 	c := []byte{8, 0, 0, 0, 0, 0}
 	c[2] = byte(len(b) >> 16)
 	c[3] = byte(len(b) >> 8)
@@ -205,25 +221,29 @@ func (s *SG) ReadRecord() ([]byte, error) {
 	n, e := s.command(c, b, false)
 	if se, ok := e.(*senseError); ok {
 		if se.mark {
-			return nil, ErrFilemark
+			return 0, ErrFilemark
 		}
-		if se.key == 8 || (se.asc == 0 && se.ascq == 5) {
-			return nil, ErrEnd
+		if se.key == 8 || (se.key == 0 && se.asc == 0 && se.ascq == 5) {
+			return 0, ErrEnd
 		}
 		if se.key == 0 && se.ili {
-			if se.valid {
-				if se.diff < 0 {
-					return nil, errors.New("tape record exceeds supported size")
-				}
-				n = len(b) - int(se.diff)
+			if !se.valid {
+				return 0, errors.New("tape record length unavailable in ILI sense")
 			}
+			if se.diff < 0 {
+				return 0, errors.New("tape record exceeds supported size")
+			}
+			if se.diff > int64(len(b)) {
+				return 0, errors.New("invalid tape record length")
+			}
+			n = len(b) - int(se.diff)
 			if n < 0 || n > len(b) {
-				return nil, errors.New("invalid tape record length")
+				return 0, errors.New("invalid tape record length")
 			}
-			return b[:n], nil
+			return n, nil
 		}
 	}
-	return b[:n], e
+	return n, e
 }
 func (s *SG) WriteRecord(b []byte) error {
 	if !s.write {
@@ -244,6 +264,16 @@ func (s *SG) Filemark() error {
 		return errors.New("read-role worker cannot write filemarks")
 	}
 	_, e := s.command([]byte{0x10, 0, 0, 0, 1, 0}, nil, false)
+	return e
+}
+
+// WRITE FILEMARKS with count zero synchronously flushes buffered data without
+// adding a tape object. It establishes a deliberate pause between write bursts.
+func (s *SG) Flush() error {
+	if !s.write {
+		return errors.New("read-role worker cannot flush writes")
+	}
+	_, e := s.command([]byte{0x10, 0, 0, 0, 0, 0}, nil, false)
 	return e
 }
 func (s *SG) security(page uint16) ([]byte, error) {

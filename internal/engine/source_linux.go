@@ -3,7 +3,6 @@ package engine
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -43,21 +42,6 @@ func CheckSource(m Manifest) error {
 	}
 	if id != m.SourceIdentity {
 		return fmt.Errorf("source filesystem or root changed; check mount and rescan")
-	}
-	return nil
-}
-func checkDestOutsideSource(source, dest string) error {
-	src, e := filepath.EvalSymlinks(source)
-	if e != nil {
-		return e
-	}
-	dir, e := filepath.EvalSymlinks(filepath.Dir(dest))
-	if e != nil {
-		return e
-	}
-	rel, e := filepath.Rel(src, dir)
-	if e == nil && (rel == "." || rel != ".." && len(rel) > 0 && rel[:min(3, len(rel))] != "../") {
-		return fmt.Errorf("output must be outside the source directory")
 	}
 	return nil
 }

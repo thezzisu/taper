@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"github.com/thezzisu/taper/internal/catalog"
+	"github.com/thezzisu/taper/internal/media"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,9 @@ import (
 )
 
 func TestCLIOfflineWorkflow(t *testing.T) {
+	original := openTape
+	openTape = func(path string, write bool) (media.Device, error) { return media.OpenSim(path, write) }
+	defer func() { openTape = original }()
 	dir := t.TempDir()
 	pass := filepath.Join(dir, "session.pass")
 	os.WriteFile(pass, []byte("synthetic CLI password"), 0600)
@@ -25,12 +29,16 @@ func TestCLIOfflineWorkflow(t *testing.T) {
 	}
 	call("catalog init")
 	sim := filepath.Join(dir, "sim.tape")
-	call("sim create", "--sim", sim, "--capacity", "10737418240")
-	call("media init", "--sim", sim, "--name", "TEST")
+	if e := media.CreateSim(sim, 10737418240, true); e != nil {
+		t.Fatal(e)
+	}
+	call("media init", "--device", sim, "--name", "TEST")
 	root := filepath.Join(dir, "source")
 	os.Mkdir(root, 0700)
 	os.WriteFile(filepath.Join(root, "hello"), []byte("hello CLI"), 0600)
-	call("batch scan", "--source", root)
+	call("stage add", "--source", root)
+	call("stage ls")
+	call("stage plan", "--frozen")
 	s, e := catalog.Open(db, []byte("synthetic CLI password"))
 	if e != nil {
 		t.Fatal(e)
@@ -38,17 +46,12 @@ func TestCLIOfflineWorkflow(t *testing.T) {
 	var id string
 	s.DB.QueryRow("SELECT id FROM batches").Scan(&id)
 	s.Close()
-	call("batch plan", "--batch", id)
-	call("backup", "--sim", sim, "--batch", id, "--frozen", "--memory", "8388608")
-	call("browse", "--batch", id)
-	call("restore", "--plan", "--batch", id)
-	call("verify", "--sim", sim, "--batch", id)
-	dest := filepath.Join(dir, "restored")
-	call("restore", "--sim", sim, "--batch", id, "--dest", dest)
-	b, e := os.ReadFile(filepath.Join(dest, "hello"))
-	if e != nil || string(b) != "hello CLI" {
-		t.Fatal(e)
-	}
+	call("stage plan", "--frozen")
+	call("stage write", "--device", sim, "--frozen", "--memory", "8388608")
+	call("archive list")
+	call("browse", "--archive", id)
+	call("verify", "--device", sim, "--memory", "8388608")
+	call("reindex", "--device", sim, "--memory", "8388608")
 	call("catalog export", "--dest", filepath.Join(dir, "export"))
 	call("key generate", "--key-file", filepath.Join(dir, "key"), "--keycard", filepath.Join(dir, "keycard"), "--name", "TEST2")
 }

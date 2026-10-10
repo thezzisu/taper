@@ -146,20 +146,26 @@ func (s *Sim) SetKey(k []byte) error {
 	return nil
 }
 func (s *Sim) ReadRecord() ([]byte, error) {
+	b := make([]byte, format.BlockSize)
+	n, e := s.ReadRecordInto(b)
+	return b[:n], e
+}
+func (s *Sim) ReadRecordInto(b []byte) (int, error) {
 	if s.pos == uint64(len(s.records)) {
-		return nil, io.EOF
+		return 0, io.EOF
 	}
 	r := s.records[s.pos]
 	s.pos++
 	if r.kind == 1 {
-		return nil, ErrFilemark
+		return 0, ErrFilemark
 	}
 	if r.key != ([16]byte{}) && r.key != s.key {
-		return nil, errors.New("wrong simulator key")
+		return 0, errors.New("wrong simulator key")
 	}
-	b := make([]byte, r.size)
-	_, e := s.f.ReadAt(b, r.offset)
-	return b, e
+	if int(r.size) > len(b) {
+		return 0, errors.New("record buffer is too small")
+	}
+	return s.f.ReadAt(b[:r.size], r.offset)
 }
 func (s *Sim) append(b []byte, kind uint32) error {
 	if !s.writable {
@@ -224,6 +230,12 @@ func (s *Sim) WriteRecord(b []byte) error { return s.append(b, 0) }
 func (s *Sim) Filemark() error {
 	if e := s.append(nil, 1); e != nil {
 		return e
+	}
+	return s.f.Sync()
+}
+func (s *Sim) Flush() error {
+	if !s.writable {
+		return errors.New("read-only simulator")
 	}
 	return s.f.Sync()
 }
