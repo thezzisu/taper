@@ -290,7 +290,8 @@ func (s *SG) SetKey(key []byte) error {
 	if len(key) != 0 && len(key) != 32 {
 		return errors.New("key must be 32 bytes")
 	}
-	if len(key) > 0 && !s.haveAlgorithm {
+	// SSC requires a supported algorithm index even when clearing the key.
+	if !s.haveAlgorithm {
 		b, e := s.security(0x10)
 		if e != nil {
 			return e
@@ -300,20 +301,7 @@ func (s *SG) SetKey(key []byte) error {
 			return errors.New("AES-256 hardware algorithm not found")
 		}
 	}
-	b := make([]byte, 20+len(key))
-	binary.BigEndian.PutUint16(b, 0x10)
-	binary.BigEndian.PutUint16(b[2:4], uint16(len(b)-4))
-	b[4] = 0x40 // all I_T nexuses, matching SSC application-managed key scope
-	b[5] = 0x44 // application-managed mode; clear on medium removal
-	if len(key) > 0 {
-		if s.write {
-			b[6] = 2
-		}
-		b[7] = 3
-		b[8] = s.algorithm
-	}
-	binary.BigEndian.PutUint16(b[18:20], uint16(len(key)))
-	copy(b[20:], key)
+	b := encryptionParameters(key, s.algorithm, s.write)
 	defer clear(b)
 	c := make([]byte, 12)
 	c[0] = 0xb5
@@ -325,6 +313,24 @@ func (s *SG) SetKey(key []byte) error {
 		s.managed = true
 	}
 	return e
+}
+
+func encryptionParameters(key []byte, algorithm byte, write bool) []byte {
+	b := make([]byte, 20+len(key))
+	binary.BigEndian.PutUint16(b, 0x10)
+	binary.BigEndian.PutUint16(b[2:4], uint16(len(b)-4))
+	b[4] = 0x40 // all I_T nexuses, matching SSC application-managed key scope
+	b[5] = 0x44 // no external encryption mode check; clear on medium removal
+	b[8] = algorithm
+	if len(key) > 0 {
+		if write {
+			b[6] = 2
+		}
+		b[7] = 3
+	}
+	binary.BigEndian.PutUint16(b[18:20], uint16(len(key)))
+	copy(b[20:], key)
+	return b
 }
 
 func selectHardwareAlgorithm(b []byte) (byte, bool) {

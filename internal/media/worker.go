@@ -3,6 +3,7 @@ package media
 import (
 	"encoding/gob"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -146,7 +147,7 @@ func (w *Worker) call(q request) (r response, e error) {
 		e = ErrFilemark
 	}
 	if r.Error != "" {
-		e = errors.New(r.Error)
+		e = fmt.Errorf("tape %s: %s", q.Op, r.Error)
 	}
 	return
 }

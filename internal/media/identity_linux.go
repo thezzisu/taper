@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -23,26 +24,35 @@ func (s *SG) ReadIdentity() ([]byte, error) {
 	if l > n-9 {
 		return nil, errors.New("invalid MAM identity")
 	}
-	return b[9 : 9+l], nil
+	return bytes.TrimRight(b[9:9+l], "\x00"), nil
 }
 func (s *SG) WriteIdentity(value []byte) error {
 	if !s.write {
 		return errors.New("read-role worker cannot update MAM")
 	}
-	if len(value) > 160 {
-		return errors.New("MAM identity limit exceeded")
+	b, e := identityParameters(value)
+	if e != nil {
+		return e
 	}
-	b := make([]byte, 4+5+len(value))
-	binary.BigEndian.PutUint32(b, uint32(len(b)-4))
-	binary.BigEndian.PutUint16(b[4:6], 0x803)
-	b[6] = 2
-	binary.BigEndian.PutUint16(b[7:9], uint16(len(value)))
-	copy(b[9:], value)
 	c := make([]byte, 16)
 	c[0] = 0x8d
 	binary.BigEndian.PutUint32(c[10:14], uint32(len(b)))
-	_, e := s.command(c, b, true)
+	_, e = s.command(c, b, true)
 	return e
+}
+
+func identityParameters(value []byte) ([]byte, error) {
+	if len(value) > 160 {
+		return nil, errors.New("MAM identity limit exceeded")
+	}
+	// SSC attribute 0803h is a fixed 160-byte text field, padded with NULs.
+	b := make([]byte, 4+5+160)
+	binary.BigEndian.PutUint32(b, uint32(len(b)-4))
+	binary.BigEndian.PutUint16(b[4:6], 0x803)
+	b[6] = 2
+	binary.BigEndian.PutUint16(b[7:9], 160)
+	copy(b[9:], value)
+	return b, nil
 }
 func (s *Sim) ReadIdentity() ([]byte, error) { return append([]byte(nil), s.header.Identity...), nil }
 func (s *Sim) WriteIdentity(b []byte) error {
