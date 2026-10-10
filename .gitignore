@@ -1,0 +1,10 @@
+/taper
+/dist/
+*.db*
+*.unlock
+*.tcat
+*.tape
+*.key
+*.keycard
+/local/
+*.pass
