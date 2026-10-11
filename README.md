@@ -32,7 +32,7 @@ taper stage write --device /dev/sg1 --memory 68719476736
 
 taper archive list
 taper browse --archive UUID --tui
-taper verify --device /dev/sg1
+GOMEMLIMIT=10GiB taper verify --device /dev/sg1 --memory 8589934592
 taper catalog export --dest /private/catalog-snapshot
 ```
 

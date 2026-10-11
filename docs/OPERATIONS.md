@@ -8,13 +8,21 @@
    capability. Capacity is planned in raw native bytes with a 1% / 2 GiB reserve.
 3. Register a cartridge read-only, preserving its independent
    recovery key and encrypted catalog outside the source disk.
-4. Use staging to plan synthetic files with aliases and record boundaries.
-   The first write requires an empty tape and writes the media label. Qualification
-   is one planned sequence: write the cases, then one full `verify` or `reindex`
-   pass as needed. Avoid repeated positioning or separate per-archive readbacks.
-5. Qualify hardware encryption and optional zstd on the same initialized tape.
-   Every batch on that tape uses its original hardware key. Device key material
-   is cleared when the worker closes.
+4. Test synthetic aliases, record boundaries and source failures locally. Cover
+   the worker transport and decoder as well as the packer, including allocations,
+   garbage collection and total process memory under sustained load.
+5. Make the approved write and, if requested, one full verification pass. Every
+   archive on that tape uses its original hardware key. Device key material is
+   cleared when the worker closes.
+
+One approved write permits at most one tape reading pass. An interrupted scan
+already counts: do not restart verification, append a reindex pass or perform
+spot reads to investigate an error. Stop device operations and analyze the saved
+logs and local tests. Tape is not a debugging or benchmarking loop.
+
+Run the main CLI as the ordinary user, granting PolicyKit authorization only to
+its typed device worker. Elevating an entire orchestration session prevents the
+ordinary user from promptly cancelling the main process without another prompt.
 
 The native backend currently supports Linux, partition 0, manually loaded tape,
 and explicit SG_IO records. It issues READ POSITION long form and LOCATE(16).
@@ -83,3 +91,17 @@ SG_IO commands temporarily block asynchronous signals on their OS thread. Linux
 sg can return ERESTARTSYS while a command is already executing; automatic syscall
 restart would submit a tape command twice. Completion is checked without retries,
 and final logical positions must match transferred record counts.
+
+`--memory` bounds the reusable pool, not total process memory. The gob transport
+also allocates a temporary message for every read response. A 64 GiB pool on a
+94 GiB host caused memory pressure before garbage collection reclaimed those
+messages. Do not infer safe read settings from successful write-pool tests.
+The measured read configuration for that host is:
+
+```sh
+GOMEMLIMIT=10GiB taper verify --device /dev/sg1 --memory 8589934592
+```
+
+This uses an 8 GiB pool and a soft Go runtime memory limit. The limit is not a hard
+RSS cap; the observed peak was 10.42 GB (decimal). Choose the read configuration
+before starting the single pass. The same pool and transport are used by reindex.
