@@ -44,8 +44,10 @@ lists, recommendations and the offline browser. Custom non-LTO labels remain
 plain text. Redirected output, JSON, `TERM=dumb` and `NO_COLOR=1` have no color.
 Live progress runs independently of I/O with a periodic refresh; redirected
 progress uses occasional plain lines. Unknown totals use a spinner without an
-invented percentage. Progress shows elapsed time and measured rate without an
-ETA derived from coarse record updates. Reaching all data records still shows finalization
+invented percentage. The transfer rate changes only when the producer reports a
+new sample and is smoothed across those samples; redraws during a quiet interval
+do not decay it. Progress shows elapsed time and measured rate without an ETA
+derived from coarse record updates. Reaching all data records still shows finalization
 until boundary checks and catalog persistence finish.
 
 Verification displays its checked scope before one default-no prompt. `--yes`

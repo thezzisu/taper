@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -15,8 +16,44 @@ import (
 type Progress struct {
 	count, bytes atomic.Int64
 	measured     atomic.Bool
+	rate         rateEstimator
 	stop         chan bool
 	done         chan struct{}
+}
+
+// rateEstimator changes only when the producer reports a new measurement. The
+// renderer can refresh often without turning a quiet interval into a fake drop
+// in throughput.
+type rateEstimator struct {
+	mu          sync.RWMutex
+	lastAt      time.Time
+	lastBytes   int64
+	value       float64
+	initialized bool
+}
+
+func (r *rateEstimator) update(at time.Time, bytes int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.initialized {
+		delta := bytes - r.lastBytes
+		elapsed := at.Sub(r.lastAt).Seconds()
+		if delta >= 0 && elapsed > 0 {
+			instant := float64(delta) / elapsed / 1e6
+			if r.value == 0 {
+				r.value = instant
+			} else {
+				r.value = r.value*0.75 + instant*0.25
+			}
+		}
+	}
+	r.lastAt, r.lastBytes, r.initialized = at, bytes, true
+}
+
+func (r *rateEstimator) load() float64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.value
 }
 
 func NewProgress(w io.Writer, action string, total int64) *Progress {
@@ -34,7 +71,7 @@ func NewProgress(w io.Writer, action string, total int64) *Progress {
 			bar = progressbar.NewOptions64(total,
 				progressbar.OptionSetWriter(w), progressbar.OptionSetWidth(24),
 				progressbar.OptionSetDescription(action), progressbar.OptionShowCount(),
-				progressbar.OptionSetPredictTime(false), progressbar.OptionSetElapsedTime(true),
+				progressbar.OptionSetPredictTime(false), progressbar.OptionSetElapsedTime(false),
 				progressbar.OptionUseANSICodes(true), progressbar.OptionSetRenderBlankState(true),
 				progressbar.OptionOnCompletion(func() { fmt.Fprintln(w) }))
 		}
@@ -43,7 +80,7 @@ func NewProgress(w io.Writer, action string, total int64) *Progress {
 		draw := func(finished, success bool) {
 			n, bytes := p.count.Load(), p.bytes.Load()
 			elapsed := time.Since(started)
-			rate := float64(bytes) / max(elapsed.Seconds(), 0.001) / 1e6
+			rate := p.rate.load()
 			state := action
 			if finished {
 				if success {
@@ -69,7 +106,7 @@ func NewProgress(w io.Writer, action string, total int64) *Progress {
 				}
 				return
 			}
-			bar.Describe(state + " | " + measurement)
+			bar.Describe(fmt.Sprintf("%s | %s | %s", state, measurement, elapsed.Round(time.Second)))
 			if !finished && total > 0 {
 				n = min(n, total-1)
 			}
@@ -96,9 +133,22 @@ func NewProgress(w io.Writer, action string, total int64) *Progress {
 }
 
 func (p *Progress) Update(count uint64, bytes int64) {
+	p.update(count, bytes, true)
+}
+
+// SetFinal updates the displayed count without treating final catalog or
+// filemark work as a new transfer-speed sample.
+func (p *Progress) SetFinal(count uint64, bytes int64) {
+	p.update(count, bytes, false)
+}
+
+func (p *Progress) update(count uint64, bytes int64, sample bool) {
 	p.bytes.Store(bytes)
 	p.count.Store(int64(count))
 	p.measured.Store(true)
+	if sample {
+		p.rate.update(time.Now(), bytes)
+	}
 }
 
 func (p *Progress) Close(success bool) { p.stop <- success; <-p.done }

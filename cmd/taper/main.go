@@ -255,7 +255,7 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 			}
 			progress := ui.NewProgress(c.ErrOrStderr(), "Verifying", int64(plan.End-plan.Start))
 			result, e = engine.VerifyTape(ctx, s, d, plan, key, engine.ReadOptions{Memory: *memory, Progress: progress.Update})
-			progress.Update(result.Records, result.Bytes)
+			progress.SetFinal(result.Records, result.Bytes)
 			progress.Close(e == nil)
 			if oe := output(result); e == nil {
 				e = oe
@@ -264,7 +264,7 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 		}
 		progress := ui.NewProgress(c.ErrOrStderr(), "Reindexing", -1)
 		result, e = engine.ReindexTape(ctx, s, d, key, engine.ReadOptions{Memory: *memory, Progress: progress.Update})
-		progress.Update(result.Records, result.Bytes)
+		progress.SetFinal(result.Records, result.Bytes)
 		progress.Close(e == nil)
 		if oe := output(result); e == nil {
 			e = oe
@@ -412,7 +412,7 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 			reps, e = engine.Replicas(s, id)
 			for _, r := range reps {
 				if r.ID == rep && r.ConfirmedBytes != nil {
-					progress.Update(r.Blocks, *r.ConfirmedBytes)
+					progress.SetFinal(r.Blocks, *r.ConfirmedBytes)
 					result["confirmed_bytes"], result["data_records"] = *r.ConfirmedBytes, r.Blocks
 					if r.End != nil {
 						result["end_position"] = *r.End
