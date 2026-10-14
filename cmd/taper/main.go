@@ -6,17 +6,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
+	container "github.com/thezzisu/taper/internal/archive"
 	"github.com/thezzisu/taper/internal/catalog"
 	"github.com/thezzisu/taper/internal/engine"
+	"github.com/thezzisu/taper/internal/format"
 	"github.com/thezzisu/taper/internal/media"
 	"github.com/thezzisu/taper/internal/policy"
 	"github.com/thezzisu/taper/internal/ui"
@@ -27,14 +28,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if e := run(ctx, os.Args[1:]); e != nil {
-		if errors.Is(e, flag.ErrHelp) {
-			return
-		}
 		fmt.Fprintln(os.Stderr, "taper:", e)
 		os.Exit(1)
 	}
 }
-func output(v any) error { e := json.NewEncoder(os.Stdout); e.SetIndent("", "  "); return e.Encode(v) }
 func password(file string) ([]byte, error) {
 	if file != "" {
 		b, e := os.ReadFile(file)
@@ -64,7 +61,7 @@ func keyFile(file string) ([]byte, error) {
 }
 
 // Tests inject the record-preserving simulator; the public CLI opens real tapes.
-var openTape = func(name string, write bool) (media.Device, error) { return media.OpenWorker(name, write) }
+var openTape = func(name string, write bool) (media.Device, error) { return media.OpenSG(name, write) }
 
 func device(name string, write bool) (media.Device, error) {
 	if name == "" {
@@ -72,85 +69,22 @@ func device(name string, write bool) (media.Device, error) {
 	}
 	return openTape(name, write)
 }
-func run(ctx context.Context, args []string) error {
-	if len(args) == 0 {
-		fmt.Fprint(os.Stdout, usage)
-		return nil
+func execute(ctx context.Context, command string, paths []string, o *settings, c *cobra.Command) error {
+	db, passFile := o.catalog, o.passFile
+	sg, source, name, rulesFile := &o.device, &o.source, &o.name, &o.rules
+	archive, copies, dest := &o.archive, &o.copies, &o.dest
+	keyName, card, noSave := &o.keyFile, &o.keycard, &o.noSaveKey
+	hardwareCompression, zstd := &o.hardwareCompression, &o.zstd
+	memory, maxWait, noCache, tui := &o.memory, &o.maxWait, &o.noCache, &o.tui
+	archivePasswordFile, remember := &o.passwordFile, &o.remember
+	output := func(v any) error { return renderResult(c.OutOrStdout(), command, *sg, v, o.json) }
+	if o.json && *tui {
+		return errors.New("--json cannot be combined with --tui")
 	}
-	if args[0] == "--help" || args[0] == "help" {
-		fmt.Fprint(os.Stdout, usage)
-		return nil
+	if (command == "tape verify" || command == "tape reindex" || command == "stage write") && (*memory < 8<<20 || *memory > engine.MaxMemory) {
+		return errors.New("--memory must be between 8388608 and 68719476736 bytes")
 	}
-	groups := map[string]map[string]string{
-		"catalog": {"init": "init", "export": "export", "import": "import", "rekey": "rekey"},
-		"media":   {"init": "media-init", "list": "media-list", "probe": "probe"},
-		"stage":   {"add": "stage-add", "rm": "stage-rm", "ls": "stage-ls", "plan": "stage-plan", "write": "stage-write"},
-		"archive": {"list": "archive-list"},
-		"key":     {"generate": "key-generate"},
-	}
-	if children, ok := groups[args[0]]; ok {
-		if len(args) < 2 {
-			return fmt.Errorf("%s requires a subcommand", args[0])
-		}
-		command, ok := children[args[1]]
-		if !ok {
-			return fmt.Errorf("unknown %s command %s", args[0], args[1])
-		}
-		args = append([]string{command}, args[2:]...)
-	} else if args[0] != "browse" && args[0] != "verify" && args[0] != "reindex" && args[0] != "device-worker" {
-		return fmt.Errorf("unknown command %s; use grouped commands such as media list", args[0])
-	}
-	command := args[0]
-	if _, ok := options[command]; !ok {
-		return fmt.Errorf("unknown command %s", command)
-	}
-	f := flag.NewFlagSet(command, flag.ContinueOnError)
-	f.Usage = func() { help(f, command, os.Stdout) }
-	home, _ := os.UserHomeDir()
-	db := f.String("catalog", filepath.Join(home, ".local/share/taper/catalog.db"), "encrypted catalog path")
-	passFile := f.String("pass-file", "", "private catalog passphrase file")
-	sg := f.String("device", "", "Linux /dev/sgN tape device")
-	source := f.String("source", "", "frozen source directory")
-	name := f.String("name", "", "archive name / cartridge label")
-	rulesFile := f.String("rules", "", "JSON include/exclude rules")
-	archive := f.String("archive", "", "stored archive UUID")
-	copies := f.Int("copies", 0, "required tape copies; 1 for a new plan, otherwise unchanged")
-	dest := f.String("dest", "", "catalog export destination")
-	keyName := f.String("key-file", "", "private 64-hex-digit tape key file")
-	card := f.String("keycard", "", "private generated recovery card path")
-	noSave := f.Bool("no-save-key", false, "do not retain tape key in catalog")
-	confirmed := f.Bool("key-backed-up", false, "confirm recovery key was saved/printed")
-	zstd := f.Bool("zstd", false, "adaptive per-record zstd")
-	memory := f.Int64("memory", 1<<30, "bounded stream pool bytes")
-	probeMBps := f.Float64("probe-mbps", 0, "read the complete source through the ring at this rate before tape I/O; refuse on starvation")
-	maxWait := f.Duration("max-wait", 2*time.Second, "stop writing when the source cannot supply another record within this time")
-	frozen := f.Bool("frozen", false, "acknowledge source has stopped changing")
-	noCache := f.Bool("no-cache", false, "rehash the source without saved scan progress")
-	writeRole := f.Bool("write", false, "device worker write role")
-	tui := f.Bool("tui", false, "interactive offline directory browser")
-	if e := f.Parse(args[1:]); e != nil {
-		return e
-	}
-	var invalid string
-	validOptions := allowed(command)
-	f.Visit(func(v *flag.Flag) {
-		if !validOptions[v.Name] {
-			invalid = v.Name
-		}
-	})
-	if invalid != "" {
-		return fmt.Errorf("--%s does not apply to %s", invalid, command)
-	}
-	if command != "stage-add" && command != "stage-rm" && command != "stage-ls" && command != "browse" && len(f.Args()) > 0 {
-		return errors.New("unexpected positional arguments")
-	}
-	if command == "device-worker" {
-		if os.Geteuid() != 0 {
-			return errors.New("device worker needs PolicyKit authorization")
-		}
-		return media.Serve(*sg, *writeRole, os.Stdin, os.Stdout)
-	}
-	if command == "key-generate" {
+	if command == "key generate" {
 		if *keyName == "" || *card == "" {
 			return errors.New("--key-file and --keycard required")
 		}
@@ -185,7 +119,7 @@ func run(ctx context.Context, args []string) error {
 		}
 		return output(map[string]string{"key_id": media.KeyID(key), "keycard": *card})
 	}
-	if command == "probe" {
+	if command == "tape probe" {
 		d, e := device(*sg, false)
 		if e != nil {
 			return e
@@ -197,58 +131,79 @@ func run(ctx context.Context, args []string) error {
 		}
 		return output(i)
 	}
-	pass, e := password(*passFile)
+	pass, e := password(passFile)
 	if e != nil {
 		return e
 	}
 	defer clear(pass)
-	if command == "import" {
+	if command == "catalog import" {
 		if *source == "" {
 			return errors.New("--source export directory required")
 		}
-		return catalog.Import(*source, *db, pass)
+		if e = catalog.Import(*source, db, pass); e != nil {
+			return e
+		}
+		return output(map[string]string{"catalog": db})
 	}
 	var s *catalog.Store
-	if command == "init" {
-		s, e = catalog.Create(*db, pass)
+	if command == "catalog init" {
+		s, e = catalog.Create(db, pass)
 	} else {
-		s, e = catalog.Open(*db, pass)
+		s, e = catalog.Open(db, pass)
 	}
 	if e != nil {
 		return e
 	}
 	defer s.Close()
-	if command == "init" {
-		return output(map[string]string{"catalog": *db})
+	if command == "catalog init" {
+		return output(map[string]string{"catalog": db})
 	}
-	if command == "export" {
+	if command == "catalog export" {
 		if *dest == "" {
 			return errors.New("--dest required")
 		}
-		return s.Export(*dest)
+		if e = s.Export(*dest); e != nil {
+			return e
+		}
+		return output(map[string]string{"export": *dest})
 	}
-	if command == "rekey" {
+	if command == "catalog rekey" {
 		next, e := password("")
 		if e != nil {
 			return e
 		}
 		defer clear(next)
-		return s.Rekey(next)
+		if e = s.Rekey(next); e != nil {
+			return e
+		}
+		return output(map[string]string{"catalog": db, "status": "passphrase changed"})
 	}
-	if command == "media-list" {
-		rows, e := s.DB.Query("SELECT id,label,serial,total,remaining,sampled,state,key_id FROM media ORDER BY label")
+	if command == "tape ls" {
+		rows, e := s.DB.Query("SELECT id,label,serial,total,remaining,sampled,state,key_id,hardware_compression,COALESCE((SELECT info FROM media_health WHERE media_id=media.id),'{}'),(SELECT COUNT(*) FROM replicas WHERE media_id=media.id AND state IN ('writing','failed')),COALESCE((SELECT unhealthy FROM media_health WHERE media_id=media.id),0) FROM media ORDER BY label")
 		if e != nil {
 			return e
 		}
 		defer rows.Close()
-		var out []map[string]any
+		out := []map[string]any{}
 		for rows.Next() {
-			var id, l, serial, sampled, state, k string
+			var id, l, serial, sampled, state, k, savedInfo string
 			var total, remaining int64
-			if e = rows.Scan(&id, &l, &serial, &total, &remaining, &sampled, &state, &k); e != nil {
+			var incomplete int
+			var compression *bool
+			var unhealthy bool
+			if e = rows.Scan(&id, &l, &serial, &total, &remaining, &sampled, &state, &k, &compression, &savedInfo, &incomplete, &unhealthy); e != nil {
 				return e
 			}
-			out = append(out, map[string]any{"id": id, "label": l, "serial": serial, "total": total, "remaining": remaining, "sampled": sampled, "state": state, "key_id": k})
+			var info media.Info
+			if e = json.Unmarshal([]byte(savedInfo), &info); e != nil {
+				return e
+			}
+			info.Total, info.Remaining = total, remaining
+			var budget any
+			if limit, available, err := info.Budget(); err == nil && incomplete == 0 && !unhealthy && compression != nil && (state == "open" || state == "registered") {
+				budget = max(0, available-engine.Reserve(limit))
+			}
+			out = append(out, map[string]any{"id": id, "label": l, "serial": serial, "reported_total_bytes": total, "reported_remaining_bytes": remaining, "native_limit_bytes": info.NativeLimit, "write_budget_bytes": budget, "logical_position": info.Position, "sampled": sampled, "state": state, "key_id": k, "hardware_compression": compression, "early_warning": info.EarlyWarning, "incomplete_writes": incomplete, "unhealthy": unhealthy, "tape_alerts": info.Alerts})
 		}
 		if e = rows.Err(); e != nil {
 			return e
@@ -260,51 +215,83 @@ func run(ctx context.Context, args []string) error {
 		return e
 	}
 	defer clear(key)
-	if command == "media-init" {
-		if len(key) > 0 && !*confirmed {
-			return errors.New("save/print recovery key, then use --key-backed-up")
-		}
+	if command == "tape register" {
 		d, e := device(*sg, false)
 		if e != nil {
 			return e
 		}
 		defer d.Close()
-		l, e := engine.RegisterMedia(s, d, *name, key, !*noSave)
+		l, e := engine.RegisterMedia(s, d, *name, key, !*noSave, *hardwareCompression)
 		if e != nil {
 			return e
 		}
-		return output(l)
+		return output(registrationResult{l, *hardwareCompression})
 	}
-	if command == "verify" || command == "reindex" {
+	if command == "tape verify" || command == "tape reindex" {
 		d, e := device(*sg, false)
 		if e != nil {
 			return e
 		}
 		defer d.Close()
-		result, e := engine.ScanTape(ctx, s, d, key, command == "reindex", engine.ReadOptions{Memory: *memory, Progress: func(n uint64) { fmt.Fprintf(os.Stderr, "read %d records\n", n) }})
+		var result engine.TapeResult
+		if command == "tape verify" {
+			plan, e := engine.PlanVerification(s, d, paths)
+			if e != nil {
+				return e
+			}
+			if o.dryRun {
+				if o.json {
+					return output(plan)
+				}
+				return ui.VerificationPlan(c.OutOrStdout(), *sg, plan)
+			}
+			if e = ui.VerificationPlan(c.ErrOrStderr(), *sg, plan); e != nil {
+				return e
+			}
+			if !o.yes {
+				if e = ui.Confirm(c.InOrStdin(), c.ErrOrStderr(), ui.IsTerminal(c.InOrStdin())); e != nil {
+					return e
+				}
+			}
+			progress := ui.NewProgress(c.ErrOrStderr(), "Verifying", int64(plan.End-plan.Start))
+			result, e = engine.VerifyTape(ctx, s, d, plan, key, engine.ReadOptions{Memory: *memory, Progress: progress.Update})
+			progress.Update(result.Records, result.Bytes)
+			progress.Close(e == nil)
+			if oe := output(result); e == nil {
+				e = oe
+			}
+			return e
+		}
+		progress := ui.NewProgress(c.ErrOrStderr(), "Reindexing", -1)
+		result, e = engine.ReindexTape(ctx, s, d, key, engine.ReadOptions{Memory: *memory, Progress: progress.Update})
+		progress.Update(result.Records, result.Bytes)
+		progress.Close(e == nil)
 		if oe := output(result); e == nil {
 			e = oe
 		}
 		return e
 	}
-	if command == "archive-list" {
+	if command == "archive ls" {
 		rows, e := s.DB.Query("SELECT id,name,created,files,logical_bytes,(SELECT COUNT(DISTINCT media_id) FROM replicas WHERE batch_id=batches.id AND state='committed') FROM batches WHERE state='committed' ORDER BY created")
 		if e != nil {
 			return e
 		}
 		defer rows.Close()
+		out := []archiveResult{}
 		for rows.Next() {
-			var id, n, created string
-			var count, size, copies int64
-			if e = rows.Scan(&id, &n, &created, &count, &size, &copies); e != nil {
+			var item archiveResult
+			if e = rows.Scan(&item.ID, &item.Name, &item.Created, &item.Files, &item.Bytes, &item.Copies); e != nil {
 				return e
 			}
-			fmt.Printf("%s  %s  %s  %d files  %.2f GiB  %d copies\n", id, created, n, count, float64(size)/(1<<30), copies)
+			out = append(out, item)
 		}
-		return rows.Err()
+		if e = rows.Err(); e != nil {
+			return e
+		}
+		return output(out)
 	}
 	switch command {
-	case "stage-add":
+	case "stage add":
 		var rules *policy.Rules
 		if *rulesFile != "" {
 			r, e := policy.Load(*rulesFile)
@@ -313,36 +300,35 @@ func run(ctx context.Context, args []string) error {
 			}
 			rules = &r
 		}
-		n, e := engine.StageAdd(ctx, s, *source, f.Args(), rules)
+		n, e := engine.StageAdd(ctx, s, *source, paths, rules)
 		if e != nil {
 			return e
 		}
 		return output(map[string]int{"staged_files": n})
-	case "stage-rm":
-		n, e := engine.StageRemove(s, f.Args())
+	case "stage rm":
+		n, e := engine.StageRemove(s, paths)
 		if e != nil {
 			return e
 		}
 		return output(map[string]int{"unstaged_files": n})
-	case "stage-ls":
+	case "stage ls":
 		st, e := engine.LoadStage(s)
 		if e != nil {
 			return e
 		}
+		out := []engine.InventoryFile{}
 		for _, file := range st.Files {
-			if selectedPath(file.Path, f.Args()) {
-				fmt.Printf("%s\t%d\n", file.Path, file.Size)
+			if selectedPath(file.Path, paths) {
+				out = append(out, file)
 			}
 		}
-		return nil
-	case "stage-plan":
-		start, last := time.Now(), time.Now()
-		m, e := engine.StagePlan(ctx, s, *name, *copies, *frozen, *noCache, func(n int64) {
-			if time.Since(last) > 15*time.Second {
-				fmt.Fprintf(os.Stderr, "hashed %.2f GiB, %.1f MB/s\n", float64(n)/(1<<30), float64(n)/time.Since(start).Seconds()/1e6)
-				last = time.Now()
-			}
+		return output(out)
+	case "stage plan":
+		progress := ui.NewProgress(c.ErrOrStderr(), "Planning", -1)
+		m, e := engine.StagePlan(ctx, s, *name, *copies, *noCache, func(n int64) {
+			progress.Update(uint64(n), n)
 		})
+		progress.Close(e == nil)
 		if e != nil {
 			return e
 		}
@@ -354,27 +340,107 @@ func run(ctx context.Context, args []string) error {
 		if e != nil {
 			return e
 		}
-		return output(map[string]any{"plan": m.ID.String(), "files": m.Files, "stream_bytes": m.Logical, "native_budget": engine.Budget(m), "recommendations": recommendations, "status": status, "directories": m.Summaries()})
-	case "stage-write":
+		index, e := engine.SummarizeArchiveIndex(s, m)
+		if e != nil {
+			return e
+		}
+		return output(map[string]any{"plan": m.ID.String(), "files": m.Files, "stream_bytes": m.Logical, "encoded_bytes": engine.Budget(m), "data_records": 1 + (m.Logical-1)/format.PayloadSize, "recommendations": recommendations, "status": status, "directories": m.Summaries(), "index": index})
+	case "stage unlock":
+		if len(paths) != 1 {
+			return errors.New("provide one staged container path; inner containers use outer.7z!/inner.zip")
+		}
+		target := paths[0]
+		prompt := func(path string) ([]byte, error) {
+			if !term.IsTerminal(int(os.Stdin.Fd())) {
+				return nil, nil
+			}
+			fmt.Fprintf(os.Stderr, "Archive password for %s (empty skips): ", path)
+			p, e := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(os.Stderr)
+			if len(p) == 0 {
+				return nil, e
+			}
+			return p, e
+		}
+		var archivePass []byte
+		if *archivePasswordFile != "" {
+			archivePass, e = os.ReadFile(*archivePasswordFile)
+			archivePass = []byte(strings.TrimRight(string(archivePass), "\r\n"))
+		} else {
+			archivePass, e = prompt(target)
+		}
+		if e != nil {
+			return e
+		}
+		defer clear(archivePass)
+		if archivePass == nil {
+			return errors.New("provide --password-file or enter the archive password in a terminal")
+		}
+		e = engine.StageUnlock(ctx, s, target, archivePass, *remember, prompt)
+		if e != nil {
+			return e
+		}
+		st, e := engine.LoadStage(s)
+		if e != nil {
+			return e
+		}
+		m, e := engine.Load(s, st.Plan)
+		if e != nil {
+			return e
+		}
+		index, e := engine.SummarizeArchiveIndex(s, m)
+		if e != nil {
+			return e
+		}
+		return output(index)
+	case "stage write":
+		var logical int64
+		if e = s.DB.QueryRow("SELECT logical_bytes FROM batches JOIN stage ON stage.plan_id=batches.id WHERE stage.id=1").Scan(&logical); e != nil {
+			return fmt.Errorf("a staged plan is required: %w", e)
+		}
 		d, e := device(*sg, true)
 		if e != nil {
 			return e
 		}
 		defer d.Close()
-		id, rep, e := engine.StageWrite(ctx, s, d, key, engine.WriteOptions{Memory: *memory, Zstd: *zstd, AllowFrozen: *frozen, ProbeMBps: *probeMBps, MaxWait: *maxWait, Underflow: func(wait time.Duration) { fmt.Fprintf(os.Stderr, "source supply waited %s\n", wait) }, Pause: func() { fmt.Fprintln(os.Stderr, "source buffer refilled; continuing the next write burst") }, Progress: func(n uint64) {
-			if n%1024 == 0 {
-				fmt.Fprintf(os.Stderr, "wrote %d records\n", n)
+		progress := ui.NewProgress(c.ErrOrStderr(), "Writing", 1+(logical-1)/format.PayloadSize)
+		var waits, pauses int
+		id, rep, e := engine.StageWrite(ctx, s, d, key, engine.WriteOptions{Memory: *memory, Zstd: *zstd, MaxWait: *maxWait, Underflow: func(time.Duration) { waits++ }, Pause: func() { pauses++ }, Progress: progress.Update})
+		result := map[string]any{"archive": id, "replica": rep, "supply_waits": waits, "refill_pauses": pauses}
+		if e == nil {
+			var reps []engine.Replica
+			reps, e = engine.Replicas(s, id)
+			for _, r := range reps {
+				if r.ID == rep && r.ConfirmedBytes != nil {
+					progress.Update(r.Blocks, *r.ConfirmedBytes)
+					result["confirmed_bytes"], result["data_records"] = *r.ConfirmedBytes, r.Blocks
+					if r.End != nil {
+						result["end_position"] = *r.End
+					}
+				}
 			}
-		}})
-		if oe := output(map[string]string{"archive": id, "replica": rep}); e == nil {
+		}
+		progress.Close(e == nil)
+		if oe := output(result); e == nil {
 			e = oe
 		}
 		return e
-	case "browse":
+	case "archive browse":
 		if *archive == "" {
 			return errors.New("--archive required")
 		}
 		m, e := engine.Load(s, *archive)
+		if e != nil {
+			return e
+		}
+		var state string
+		if e = s.DB.QueryRow("SELECT state FROM batches WHERE id=?", m.ID.String()).Scan(&state); e != nil {
+			return e
+		}
+		if state != "committed" {
+			return errors.New("archive has no committed backup; use stage ls to view staged files")
+		}
+		index, e := engine.ArchiveEntries(s, *archive)
 		if e != nil {
 			return e
 		}
@@ -383,16 +449,28 @@ func run(ctx context.Context, args []string) error {
 			if e != nil {
 				return e
 			}
-			return ui.Browse(m, reps, os.Stdin, os.Stdout)
+			return ui.Browse(m, reps, index, c.InOrStdin(), c.OutOrStdout())
 		}
+		out := []browseResult{}
 		for _, c := range m.Contents {
 			for _, file := range c.Files {
-				if selectedPath(file.Path, f.Args()) {
-					fmt.Printf("%s\t%d\t%s\n", file.Path, c.Size, c.Hash)
+				if selectedPath(file.Path, paths) {
+					out = append(out, browseResult{Path: file.Path, Size: c.Size, Hash: c.Hash})
 				}
 			}
 		}
-		return nil
+		for _, entry := range index {
+			for _, file := range m.Contents[entry.Ordinal].Files {
+				if !container.IsArchiveName(file.Path) {
+					continue
+				}
+				path := file.Path + "!/" + entry.Path
+				if selectedPath(path, paths) {
+					out = append(out, browseResult{Path: path, Size: entry.Size, Format: entry.Format, State: entry.State})
+				}
+			}
+		}
+		return output(out)
 	default:
 		return fmt.Errorf("unknown command %s", command)
 	}

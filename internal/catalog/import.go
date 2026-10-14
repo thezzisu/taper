@@ -33,6 +33,13 @@ func Import(src, dst string, pass []byte) error {
 	if !hmac.Equal(h.Sum(nil), mac) {
 		return errors.New("export authentication failed")
 	}
+	snapshot, e := openDatabase(filepath.Join(src, "catalog.db"), key, "ro")
+	if e != nil {
+		return e
+	}
+	if e = errors.Join(checkVersion(snapshot), snapshot.Close()); e != nil {
+		return e
+	}
 	if e = os.MkdirAll(filepath.Dir(dst), 0700); e != nil {
 		return e
 	}

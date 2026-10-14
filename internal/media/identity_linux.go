@@ -28,7 +28,7 @@ func (s *SG) ReadIdentity() ([]byte, error) {
 }
 func (s *SG) WriteIdentity(value []byte) error {
 	if !s.write {
-		return errors.New("read-role worker cannot update MAM")
+		return errors.New("read-only device cannot update MAM")
 	}
 	b, e := identityParameters(value)
 	if e != nil {
@@ -75,12 +75,4 @@ func (s *Sim) WriteIdentity(b []byte) error {
 		return e
 	}
 	return s.f.Sync()
-}
-func (w *Worker) ReadIdentity() ([]byte, error) {
-	r, e := w.call(request{Op: "identity-read"})
-	return r.Data, e
-}
-func (w *Worker) WriteIdentity(b []byte) error {
-	_, e := w.call(request{Op: "identity-write", Data: b})
-	return e
 }

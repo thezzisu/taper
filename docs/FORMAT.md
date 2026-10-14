@@ -24,7 +24,8 @@ Integers are little-endian. Reserved bytes must be zero when writing.
 | 56 | 8 | Reserved |
 
 CRC32C uses the Castagnoli polynomial. A zstd payload is one independently
-decodable frame. Decoding is limited to the advertised bounded raw length.
+decodable frame. The decoder has fixed memory/window limits and checks the
+decoded length against the advertised raw length.
 All DATA records except the final one contain exactly 1,048,512 raw bytes.
 
 ## Packed payload stream
@@ -51,6 +52,14 @@ references, or cross-batch dependencies. Nonempty directories follow from paths;
 empty directories are omitted. Contents are normal byte streams, including
 expanded sparse regions. Filesystem permissions and special files are outside v1.
 
+Sidecars do not contain mtimes, original source paths, source filesystem identity,
+selection rules or exclusion history. Those fields are catalog-only. The desired
+hardware compression setting is also catalog-only; drive-compressed records are
+self-describing and need no such preference for decompression. Reindexing
+can recover the stored paths and contents but cannot reconstruct those fields.
+The recovered write preference is NULL until explicitly set with `tape register`;
+it is never inferred from the drive's current mode or a new-tape default.
+
 ## Controls and durable boundary
 
 Control payloads are compact UTF-8 JSON. MEDIA contains `id`, `name`, cartridge
@@ -68,11 +77,28 @@ The SHA-256 manifest digest hashes each path in lexical order as:
 Per-file hashes are not stored in sidecars. The fixed-size batch digest validates
 a full rebuild without creating a centralized directory area.
 
+The reader computes SHA-256 from each stored content extent, reconstructs this
+digest, and checks it against BEGIN/COMMIT. Verification then compares the digest
+with `batches.digest` in SQLite and checks the recorded replica layout. It does
+not issue a database query per content while streaming or reread the source disk.
+
 Within a replica, DATA logical object addresses are `data_start + sequence`;
 there are no intervening filemarks. SQLite extents refer to uncompressed stream
 offsets. For offset O, record sequence is O/1,048,512 and payload offset is the
 remainder. These remain stable under either hardware or per-record compression.
 
 An interrupted append is not a committed replica. No tail truncation or rollback
-is allowed. Retry appends a new replica. A flush ambiguity is reported, and
-reindex can reconcile a COMMIT/filemark present on media after a catalog failure.
+is performed by taper. A tape with an unresolved interrupted replica is not
+recommended and cannot be appended to until an operator resolves its tail.
+A separately authorized operation is required; the program does not retry
+automatically. A flush ambiguity is reported, and a recovery scan
+can reconcile a COMMIT/filemark present on media after a catalog failure. Such a
+scan consumes a full read pass; it is not a lightweight follow-up to verification.
+
+Catalog capacity samples preserve raw device responses, their acquisition time,
+and exact logical object positions. Capacity budgets never replace measured
+counters. Replica `confirmed_bytes` and `confirmed_records` count successful
+record-write commands (or complete records observed by a successful scan), while
+`blocks` counts DATA records and `end_pos` records the logical boundary including
+the durable filemark. Unknown observations are NULL. The original tape record
+format remains version 1; these accounting fields are catalog-only.

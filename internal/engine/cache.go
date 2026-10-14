@@ -13,7 +13,7 @@ import (
 	"syscall"
 )
 
-// Cache reuse is permitted only for explicitly frozen/read-only sources.
+// Callers must keep sources unchanged through planning and all replica writes.
 type HashCache struct {
 	s          *catalog.Store
 	root, fsid string

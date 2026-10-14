@@ -4,11 +4,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math/bits"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 	"unsafe"
 
 	"github.com/thezzisu/taper/internal/format"
@@ -42,26 +42,31 @@ type sgHeader struct {
 type SG struct {
 	f             *os.File
 	write         bool
-	locked        bool
 	algorithm     byte
 	haveAlgorithm bool
 	managed       bool
 }
 type senseError struct {
-	key, asc, ascq byte
-	mark, eom, ili bool
-	diff           int64
-	valid          bool
+	key, asc, ascq         byte
+	mark, eom, ili         bool
+	diff                   int64
+	valid                  bool
+	deferred               bool
+	opcode                 byte
+	requested, transferred int
+	residual               int32
+	raw                    []byte
 }
 
 func (e *senseError) Error() string {
-	return fmt.Sprintf("SCSI sense key=%x ASC=%02x/%02x filemark=%t EOM=%t ILI=%t", e.key, e.asc, e.ascq, e.mark, e.eom, e.ili)
+	return fmt.Sprintf("SCSI opcode=%02x sense key=%x ASC=%02x/%02x filemark=%t EOM=%t ILI=%t deferred=%t information_valid=%t information=%d requested=%d transferred=%d residual=%d raw_sense=%x", e.opcode, e.key, e.asc, e.ascq, e.mark, e.eom, e.ili, e.deferred, e.valid, e.diff, e.requested, e.transferred, e.residual, e.raw)
 }
 func parseSense(b []byte) *senseError {
-	e := &senseError{}
+	e := &senseError{raw: append([]byte(nil), b...)}
 	if len(b) < 3 {
 		return e
 	}
+	e.deferred = b[0]&127 == 0x71 || b[0]&127 == 0x73
 	switch b[0] & 127 {
 	case 0x70, 0x71:
 		e.key = b[2] & 15
@@ -143,7 +148,7 @@ func OpenSG(name string, write bool) (*SG, error) {
 		f.Close()
 		return nil, e
 	}
-	return &SG{f: f, write: write, locked: true}, nil
+	return &SG{f: f, write: write}, nil
 }
 func (s *SG) command(cdb, data []byte, out bool) (int, error) {
 	if len(cdb) == 0 {
@@ -172,30 +177,42 @@ func (s *SG) command(cdb, data []byte, out bool) (int, error) {
 		return 0, errno
 	}
 	if h.Host != 0 {
-		return 0, fmt.Errorf("SCSI host status %x", h.Host)
+		return 0, fmt.Errorf("SCSI opcode=%02x host_status=%x driver_status=%x scsi_status=%x requested=%d residual=%d raw_sense=%x", cdb[0], h.Host, h.Driver, h.Status, len(data), h.Resid, sense[:h.SenseLen])
 	}
 	n := len(data) - int(h.Resid)
 	if n < 0 || n > len(data) {
 		return 0, errors.New("invalid SCSI residual")
 	}
 	if h.Status != 0 || h.Driver&15 != 0 {
-		return n, parseSense(sense[:h.SenseLen])
+		err := parseSense(sense[:h.SenseLen])
+		err.opcode, err.requested, err.transferred, err.residual = cdb[0], len(data), n, h.Resid
+		return n, err
 	}
 	return n, nil
 }
 func (s *SG) Position() (uint64, error) {
-	b := make([]byte, 32)
-	_, e := s.command([]byte{0x34, 6, 0, 0, 0, 0, 0, 0, 0, 0}, b, false)
+	b, e := s.positionData()
 	if e != nil {
 		return 0, e
 	}
 	if b[0]&4 != 0 {
 		return 0, errors.New("logical position unknown")
 	}
-	if binary.BigEndian.Uint32(b[4:8]) != 0 {
-		return 0, errors.New("only partition 0 supported")
-	}
 	return binary.BigEndian.Uint64(b[8:16]), nil
+}
+func (s *SG) positionData() ([]byte, error) {
+	b := make([]byte, 32)
+	n, e := s.command([]byte{0x34, 6, 0, 0, 0, 0, 0, 0, 0, 0}, b, false)
+	if e != nil {
+		return nil, e
+	}
+	if n != len(b) {
+		return nil, errors.New("truncated READ POSITION response")
+	}
+	if binary.BigEndian.Uint32(b[4:8]) != 0 {
+		return nil, errors.New("only partition 0 supported")
+	}
+	return b, nil
 }
 func (s *SG) Locate(pos uint64) error {
 	c := make([]byte, 16)
@@ -219,11 +236,18 @@ func (s *SG) ReadRecordInto(b []byte) (int, error) {
 	c[3] = byte(len(b) >> 8)
 	c[4] = byte(len(b))
 	n, e := s.command(c, b, false)
+	return readResult(len(b), n, e)
+}
+
+func readResult(size, n int, e error) (int, error) {
 	if se, ok := e.(*senseError); ok {
+		if se.deferred {
+			return n, e
+		}
 		if se.mark {
 			return 0, ErrFilemark
 		}
-		if se.key == 8 || (se.key == 0 && se.asc == 0 && se.ascq == 5) {
+		if !se.mark && !se.ili && (se.key == 8 || se.key == 0) && se.asc == 0 && se.ascq == 5 {
 			return 0, ErrEnd
 		}
 		if se.key == 0 && se.ili {
@@ -233,11 +257,11 @@ func (s *SG) ReadRecordInto(b []byte) (int, error) {
 			if se.diff < 0 {
 				return 0, errors.New("tape record exceeds supported size")
 			}
-			if se.diff > int64(len(b)) {
+			if se.diff > int64(size) {
 				return 0, errors.New("invalid tape record length")
 			}
-			n = len(b) - int(se.diff)
-			if n < 0 || n > len(b) {
+			n = size - int(se.diff)
+			if n < 0 || n > size {
 				return 0, errors.New("invalid tape record length")
 			}
 			return n, nil
@@ -247,7 +271,7 @@ func (s *SG) ReadRecordInto(b []byte) (int, error) {
 }
 func (s *SG) WriteRecord(b []byte) error {
 	if !s.write {
-		return errors.New("read-role worker cannot write")
+		return errors.New("read-only device cannot write")
 	}
 	if len(b) == 0 || len(b) > format.BlockSize {
 		return errors.New("invalid record size")
@@ -261,7 +285,7 @@ func (s *SG) WriteRecord(b []byte) error {
 }
 func (s *SG) Filemark() error {
 	if !s.write {
-		return errors.New("read-role worker cannot write filemarks")
+		return errors.New("read-only device cannot write filemarks")
 	}
 	_, e := s.command([]byte{0x10, 0, 0, 0, 1, 0}, nil, false)
 	return e
@@ -271,7 +295,7 @@ func (s *SG) Filemark() error {
 // adding a tape object. It establishes a deliberate pause between write bursts.
 func (s *SG) Flush() error {
 	if !s.write {
-		return errors.New("read-role worker cannot flush writes")
+		return errors.New("read-only device cannot flush writes")
 	}
 	_, e := s.command([]byte{0x10, 0, 0, 0, 0, 0}, nil, false)
 	return e
@@ -348,69 +372,66 @@ func selectHardwareAlgorithm(b []byte) (byte, bool) {
 }
 func (s *SG) Info() (info Info, err error) {
 	b := make([]byte, 6)
-	if _, err = s.command([]byte{5, 0, 0, 0, 0, 0}, b, false); err != nil {
+	n, err := s.command([]byte{5, 0, 0, 0, 0, 0}, b, false)
+	if err != nil {
 		return
+	}
+	if n != len(b) {
+		return info, errors.New("truncated READ BLOCK LIMITS response")
 	}
 	info.MaxRecord = int(b[1])<<16 | int(b[2])<<8 | int(b[3])
 	c := make([]byte, 16)
 	c[0] = 0x8c
 	binary.BigEndian.PutUint32(c[10:14], 8192)
 	b = make([]byte, 8192)
-	n, err := s.command(c, b, false)
+	n, err = s.command(c, b, false)
 	if err != nil {
 		return info, err
 	}
-	b = b[:n]
-	for off := 4; off+5 <= len(b); {
-		id := binary.BigEndian.Uint16(b[off:])
-		l := int(binary.BigEndian.Uint16(b[off+3:]))
-		if off+5+l > len(b) {
-			return info, errors.New("invalid MAM response")
-		}
-		v := b[off+5 : off+5+l]
-		switch id {
-		case 0:
-			if l == 8 {
-				info.Remaining = int64(binary.BigEndian.Uint64(v)) << 20
-			}
-		case 1:
-			if l == 8 {
-				info.Total = int64(binary.BigEndian.Uint64(v)) << 20
-			}
-		case 0x401:
-			info.Serial = strings.TrimSpace(string(v))
-		case 0x806:
-			info.Barcode = strings.TrimSpace(string(v))
-		}
-		off += 5 + l
+	if err = mamInfo(b[:n], &info); err != nil {
+		return info, err
 	}
-	if info.Total <= 0 || info.Remaining < 0 || info.Serial == "" {
-		return info, errors.New("missing MAM capacity/serial")
+	position, err := s.positionData()
+	if err != nil {
+		return info, err
 	}
-	rawTotal := info.Total
-	info.Total = min(rawTotal, 2_500_000_000_000)
-	info.Remaining = min(info.Remaining, rawTotal)
-	hi, lo := bits.Mul64(uint64(info.Remaining), uint64(info.Total))
-	q, _ := bits.Div64(hi, lo, uint64(rawTotal))
-	info.Remaining = int64(q)
-	b = make([]byte, 64)
-	n, e := s.command([]byte{0x5a, 8, 0x0f, 0, 0, 0, 0, 0, 64, 0}, b, false)
-	if e == nil && n >= 12 {
-		off := 8 + int(binary.BigEndian.Uint16(b[6:8]))
-		if off+3 <= n {
-			info.Compression = b[off+2]&128 != 0
-		}
+	info.EarlyWarning = position[0]&0x40 != 0
+	info.PositionData = position
+	if position[0]&4 == 0 {
+		p := binary.BigEndian.Uint64(position[8:16])
+		info.Position = &p
 	}
+	_, page, e := readCompression(s.command)
+	if e != nil {
+		return info, fmt.Errorf("compression query: %w", e)
+	}
+	info.Compression = page[2]&0x80 != 0
 	caps, e := s.security(0x10)
-	info.Encryption = e == nil && len(caps) >= 44
+	if e != nil {
+		return info, fmt.Errorf("encryption capability query: %w", e)
+	}
+	if len(caps) < 20 || int(binary.BigEndian.Uint16(caps[2:4]))+4 != len(caps) {
+		return info, errors.New("truncated encryption capability response")
+	}
+	_, info.Encryption = selectHardwareAlgorithm(caps)
 	logs := make([]byte, 1024)
 	ln, e := s.command([]byte{0x4d, 0, 0x6e, 0, 0, 0, 0, 4, 0, 0}, logs, false)
 	if e != nil {
 		return info, fmt.Errorf("TapeAlert query failed: %w", e)
 	}
-	for off := 4; off+4 <= ln; {
+	if ln < 4 || logs[0]&0x3f != 0x2e {
+		return info, errors.New("invalid TapeAlert log page")
+	}
+	end := 4 + int(binary.BigEndian.Uint16(logs[2:4]))
+	if end > ln {
+		return info, errors.New("truncated TapeAlert log page")
+	}
+	for off := 4; off < end; {
+		if off+4 > end {
+			return info, errors.New("truncated TapeAlert parameter")
+		}
 		length := int(logs[off+3])
-		if off+4+length > ln {
+		if off+4+length > end {
 			return info, errors.New("invalid TapeAlert response")
 		}
 		if length > 0 && logs[off+4] != 0 {
@@ -418,6 +439,7 @@ func (s *SG) Info() (info Info, err error) {
 		}
 		off += 4 + length
 	}
+	info.Sampled = time.Now().UTC().Format(time.RFC3339Nano)
 	return info, nil
 }
 func (s *SG) Close() error {

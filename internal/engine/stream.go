@@ -7,19 +7,17 @@ import (
 	"errors"
 	"github.com/klauspost/compress/zstd"
 	"github.com/thezzisu/taper/internal/format"
-	"github.com/thezzisu/taper/internal/media"
 	"io"
 )
 
 type batchStream struct {
-	d        media.Device
-	dec      *zstd.Decoder
-	batch    format.ID
-	seq      uint64
-	position uint64
-	pending  []byte
-	ctx      context.Context
-	short    bool
+	d       *sequentialReader
+	dec     *zstd.Decoder
+	batch   format.ID
+	seq     uint64
+	pending []byte
+	ctx     context.Context
+	short   bool
 }
 
 func (s *batchStream) Read(p []byte) (int, error) {
@@ -34,7 +32,6 @@ func (s *batchStream) Read(p []byte) (int, error) {
 			return 0, errors.New("short DATA record before stream end")
 		}
 		b, e := s.d.ReadRecord()
-		s.position++
 		if e != nil {
 			return 0, e
 		}
@@ -44,9 +41,7 @@ func (s *batchStream) Read(p []byte) (int, error) {
 		}
 		if f.Kind != format.Data || f.Batch != s.batch || f.Seq != s.seq || len(f.Payload) == 0 {
 			if f.Kind == format.Begin {
-				if r, ok := s.d.(*sequentialReader); ok {
-					r.unread(b)
-				}
+				s.d.unread(b)
 			}
 			return 0, errors.New("invalid sequential data record")
 		}

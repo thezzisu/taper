@@ -1,0 +1,5 @@
+# Preserve verbatim upstream notices and unified-diff context lines.
+internal/archive/testdata/*LICENSE -whitespace
+internal/archive/testdata/formats/*LICENSE -whitespace
+internal/archive/wasm/licenses/** -whitespace
+internal/archive/wasm/wasi.patch -whitespace

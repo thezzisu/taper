@@ -1,0 +1,324 @@
+[
+  {
+    "name": "APFS/case_sensitive.bin",
+    "format": "APFS",
+    "bytes": 327194,
+    "sha256": "e878b4203d5643e24eaf8515055d9960006853d7dfce5d464e1d244fe87169a8",
+    "warning": true
+  },
+  {
+    "name": "APM/plain.apm",
+    "format": "APM",
+    "bytes": 4608,
+    "sha256": "e31fec8f6be41419f4996472bfd285d50e9d4601c15ce34da58f3b97023805c0",
+    "warning": false
+  },
+  {
+    "name": "Ar/test_read_format_ar.ar",
+    "format": "Ar",
+    "bytes": 21,
+    "sha256": "f7887f6ddc820e4a00372c1350e800a0794e19eb4fd60e1c3c2824ef6cd3c5f9",
+    "warning": false
+  },
+  {
+    "name": "Arj/Arj.method1.arj",
+    "format": "Arj",
+    "bytes": 100926,
+    "sha256": "469b77f16ea39f4aa23bf26bfdbf279afb3108c0d218fc73c6dfe5b8ec0ffa50",
+    "warning": false
+  },
+  {
+    "name": "Base64/plain.b64",
+    "format": "Base64",
+    "bytes": 744,
+    "sha256": "d299292134dc021dccf835ddb2fc953d0685e5904b2392ec7f39e4b93627d7c7",
+    "warning": false
+  },
+  {
+    "name": "COFF/plain.obj",
+    "format": "COFF",
+    "bytes": 453,
+    "sha256": "3b01ea452768389257b112647a6ce297bb1cc6b721e352637ff895e09ba6614e",
+    "warning": false
+  },
+  {
+    "name": "Chm/7-zip.chm",
+    "format": "Chm",
+    "bytes": 407624,
+    "sha256": "111b130a20e7c626af924e122aa2ec23ffc3940977511da10bacb332a51975b6",
+    "warning": false
+  },
+  {
+    "name": "Compound/olefile-test.doc",
+    "format": "Compound",
+    "bytes": 18840,
+    "sha256": "5eccbe5bec6be204d445afdb1cb9a1eb8ec9fcb12b405d6752bfb330ffa329c3",
+    "warning": false
+  },
+  {
+    "name": "Cpio/test_read_format_cpio_bin_be.cpio",
+    "format": "Cpio",
+    "bytes": 5,
+    "sha256": "36bbe50ed96841d10443bcb670d6554f0a34b761be67ec9c4a8ad2c0c44ca42c",
+    "warning": true
+  },
+  {
+    "name": "CramFS/plain.cramfs",
+    "format": "CramFS",
+    "bytes": 744,
+    "sha256": "d299292134dc021dccf835ddb2fc953d0685e5904b2392ec7f39e4b93627d7c7",
+    "warning": false
+  },
+  {
+    "name": "ELF/plain.elf",
+    "format": "ELF",
+    "bytes": 420,
+    "sha256": "0296c62e2bba77fa7bb1e22aa93a5535513ab39d8dfe2f2b64a5a1b245648756",
+    "warning": false
+  },
+  {
+    "name": "Ext/plain.ext4",
+    "format": "Ext",
+    "bytes": 1082088,
+    "sha256": "62f90c2eed9aaa14f673f7d6f317402343c530d23b7f9923d5869b4e02bb96bb",
+    "warning": false
+  },
+  {
+    "name": "FAT/plain.fat",
+    "format": "FAT",
+    "bytes": 744,
+    "sha256": "d299292134dc021dccf835ddb2fc953d0685e5904b2392ec7f39e4b93627d7c7",
+    "warning": false
+  },
+  {
+    "name": "FLV/audio.flv",
+    "format": "FLV",
+    "bytes": 744,
+    "sha256": "d299292134dc021dccf835ddb2fc953d0685e5904b2392ec7f39e4b93627d7c7",
+    "warning": false
+  },
+  {
+    "name": "GPT/plain.gpt",
+    "format": "GPT",
+    "bytes": 4096,
+    "sha256": "262ff6bc9e00225ce1c0c240c91339a0684fb816588c981aae0942c2aafc1927",
+    "warning": false
+  },
+  {
+    "name": "IHex/plain.ihex",
+    "format": "IHex",
+    "bytes": 744,
+    "sha256": "d299292134dc021dccf835ddb2fc953d0685e5904b2392ec7f39e4b93627d7c7",
+    "warning": false
+  },
+  {
+    "name": "Iso/payload.iso",
+    "format": "Iso",
+    "bytes": 36,
+    "sha256": "c7808f0722aaa1c0fd63532877b90c97a9572e85a59229b8921f5c24827802f0",
+    "warning": false
+  },
+  {
+    "name": "LP/plain.lpimg",
+    "format": "LP",
+    "bytes": 8192,
+    "sha256": "8aaf2b0d4a635b871c25734ff5677467fd0369dd5071e004d4621c91b006fb12",
+    "warning": false
+  },
+  {
+    "name": "MBR/fat-disk.mbr",
+    "format": "MBR",
+    "bytes": 2097152,
+    "sha256": "4809ecf1479fb31df037b96e8e8c58628b49ed165265b690d5f03deee30a9cae",
+    "warning": false
+  },
+  {
+    "name": "MachO/executable.macho",
+    "format": "MachO",
+    "bytes": 744,
+    "sha256": "d299292134dc021dccf835ddb2fc953d0685e5904b2392ec7f39e4b93627d7c7",
+    "warning": false
+  },
+  {
+    "name": "MsLZ/plain.mslz",
+    "format": "MsLZ",
+    "bytes": 744,
+    "sha256": "d299292134dc021dccf835ddb2fc953d0685e5904b2392ec7f39e4b93627d7c7",
+    "warning": false
+  },
+  {
+    "name": "Mub/plain.mub",
+    "format": "Mub",
+    "bytes": 1320,
+    "sha256": "553ed33c57b91bb35a942c3d8bda082d7f6280ca52f0cd5e079e494e316d93b5",
+    "warning": false
+  },
+  {
+    "name": "NTFS/plain.ntfs",
+    "format": "NTFS",
+    "bytes": 2573060,
+    "sha256": "51f933b9d6b4694b6521bbe1d16511054db8d5d6119b4d06b69b1c8158565939",
+    "warning": false
+  },
+  {
+    "name": "Nsis/nsis-setup.exe",
+    "format": "Nsis",
+    "bytes": 7399391,
+    "sha256": "09a709e8205e2ddbd22326fcea84505bdb29bf4d08fbbb72c2b670ff43f1b54f",
+    "warning": false
+  },
+  {
+    "name": "PE/7z.exe",
+    "format": "PE",
+    "bytes": 574770,
+    "sha256": "5f4af8509c94f6354d23cef9902ecd86d378d7eda5255f15c21e5b3ab5fadcff",
+    "warning": false
+  },
+  {
+    "name": "Ppmd/plain.pmd",
+    "format": "Ppmd",
+    "bytes": 744,
+    "sha256": "d299292134dc021dccf835ddb2fc953d0685e5904b2392ec7f39e4b93627d7c7",
+    "warning": false
+  },
+  {
+    "name": "QCOW/payload.qcow2",
+    "format": "QCOW",
+    "bytes": 4096,
+    "sha256": "262ff6bc9e00225ce1c0c240c91339a0684fb816588c981aae0942c2aafc1927",
+    "warning": false
+  },
+  {
+    "name": "Rpm/test_read_format_cpio_svr4_gzip_rpm.rpm",
+    "format": "Rpm",
+    "bytes": 121,
+    "sha256": "9fbf5741f45acd6fc40e26a0138a191f47db27b4839b13b9d051643a9d6ea46b",
+    "warning": false
+  },
+  {
+    "name": "SWF/plain.swf",
+    "format": "SWF",
+    "bytes": 750,
+    "sha256": "a8a046a80c4c791bfb7063c66ac52fb1cec438aab6890c6d471a34d3ee4c7e61",
+    "warning": false
+  },
+  {
+    "name": "SWFc/compressed.swf",
+    "format": "SWFc",
+    "bytes": 772,
+    "sha256": "eb649ba1acabf4c4100397bdcc5c7e0c6d0d8b9b670468696719744495542c8b",
+    "warning": false
+  },
+  {
+    "name": "Sparse/plain.simg",
+    "format": "Sparse",
+    "bytes": 4096,
+    "sha256": "262ff6bc9e00225ce1c0c240c91339a0684fb816588c981aae0942c2aafc1927",
+    "warning": false
+  },
+  {
+    "name": "SquashFS/gzip.sqfs",
+    "format": "SquashFS",
+    "bytes": 4177974,
+    "sha256": "d1d6f2367d4d3d13e879fce938b113b6cd185b9916f9507707b653924bb590e0",
+    "warning": false
+  },
+  {
+    "name": "TE/plain.te",
+    "format": "TE",
+    "bytes": 744,
+    "sha256": "d299292134dc021dccf835ddb2fc953d0685e5904b2392ec7f39e4b93627d7c7",
+    "warning": false
+  },
+  {
+    "name": "UEFIc/plain.scap",
+    "format": "UEFIc",
+    "bytes": 744,
+    "sha256": "d299292134dc021dccf835ddb2fc953d0685e5904b2392ec7f39e4b93627d7c7",
+    "warning": false
+  },
+  {
+    "name": "UEFIf/plain.uefif",
+    "format": "UEFIf",
+    "bytes": 744,
+    "sha256": "d299292134dc021dccf835ddb2fc953d0685e5904b2392ec7f39e4b93627d7c7",
+    "warning": false
+  },
+  {
+    "name": "Udf/payload.udf",
+    "format": "Udf",
+    "bytes": 36,
+    "sha256": "c7808f0722aaa1c0fd63532877b90c97a9572e85a59229b8921f5c24827802f0",
+    "warning": false
+  },
+  {
+    "name": "VDI/basic.vdi",
+    "format": "VDI",
+    "bytes": 10485760,
+    "sha256": "92d551781f9b62f3c8601ffd375cc7547efb1127e3cd2acc652f50f2d31afb8c",
+    "warning": false
+  },
+  {
+    "name": "VHD/dynamic.vhd",
+    "format": "VHD",
+    "bytes": 10485760,
+    "sha256": "ecff2ef6615a3cddc6a6885f1c6d9cf13a232697e1dc6575f2c2f01f57247784",
+    "warning": false
+  },
+  {
+    "name": "VHDX/fixed.vhdx",
+    "format": "VHDX",
+    "bytes": 10485760,
+    "sha256": "bc0be4623b15aa84216fb31ba24e3b621ec7f1c72d198c990ac0eced222d9f62",
+    "warning": false
+  },
+  {
+    "name": "VMDK/plain.vmdk",
+    "format": "VMDK",
+    "bytes": 4096,
+    "sha256": "262ff6bc9e00225ce1c0c240c91339a0684fb816588c981aae0942c2aafc1927",
+    "warning": false
+  },
+  {
+    "name": "Xar/test_read_format_xar_toc_premature_stream_end_control.xar",
+    "format": "Xar",
+    "bytes": 60,
+    "sha256": "13f23164ee0bf58475aa9b7673cfb2becff3d25a2b2dab4075e44681f7de4097",
+    "warning": false
+  },
+  {
+    "name": "Z/test_read_format_raw.data.Z",
+    "format": "Z",
+    "bytes": 4,
+    "sha256": "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c",
+    "warning": false
+  },
+  {
+    "name": "lzma/plain.lzma",
+    "format": "lzma",
+    "bytes": 744,
+    "sha256": "d299292134dc021dccf835ddb2fc953d0685e5904b2392ec7f39e4b93627d7c7",
+    "warning": false
+  },
+  {
+    "name": "lzma86/plain.lzma86",
+    "format": "lzma86",
+    "bytes": 744,
+    "sha256": "d299292134dc021dccf835ddb2fc953d0685e5904b2392ec7f39e4b93627d7c7",
+    "warning": false
+  },
+  {
+    "name": "zstd/plain.zst",
+    "format": "zstd",
+    "bytes": 744,
+    "sha256": "d299292134dc021dccf835ddb2fc953d0685e5904b2392ec7f39e4b93627d7c7",
+    "warning": false
+  },
+  {
+    "name": "ArjSplit/Arj.store.split.arj",
+    "format": "Arj",
+    "bytes": 19261,
+    "sha256": "af0bc349489f4b09e8e4c0514eaf0e4bdda2f2431cb728c39fa2a7e4ccf57797",
+    "warning": true
+  }
+]

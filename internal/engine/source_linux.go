@@ -34,7 +34,7 @@ func IdentifySource(root string) (SourceIdentity, error) {
 }
 func CheckSource(m Manifest) error {
 	if m.SourceIdentity == (SourceIdentity{}) {
-		return fmt.Errorf("batch has no source identity: rescan a frozen source")
+		return fmt.Errorf("batch has no source identity: rescan a stable source")
 	}
 	id, e := IdentifySource(m.Source)
 	if e != nil {

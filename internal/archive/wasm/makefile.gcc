@@ -1,0 +1,8 @@
+PROG = taper7z.wasm
+ST_MODE = 1
+include ../Format7zF/Arc_gcc.mak
+LOCAL_FLAGS = $(LOCAL_FLAGS_ST)
+OBJS = $(ARC_OBJS) $O/MyWindows.o $O/LoadCodecs.o $O/OpenArchive.o $O/DefaultName.o $O/SetProperties.o $O/Taper.o
+include ../../7zip_gcc.mak
+$O/Taper.o: Taper.cpp
+	$(CXX) $(CXXFLAGS) $(CFLAGS) $<

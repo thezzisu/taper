@@ -2,6 +2,7 @@ package media
 
 import (
 	"errors"
+	"fmt"
 	"io"
 )
 
@@ -9,14 +10,35 @@ var ErrFilemark = errors.New("filemark")
 var ErrEnd = io.EOF
 
 type Info struct {
-	Serial      string `json:"serial"`
-	Total       int64  `json:"total"`
-	Remaining   int64  `json:"remaining"`
-	MaxRecord   int    `json:"max_record"`
-	Compression bool   `json:"compression"`
-	Encryption  bool   `json:"encryption"`
-	Barcode     string `json:"barcode,omitempty"`
-	Alerts      []int  `json:"tape_alerts,omitempty"`
+	Serial       string  `json:"serial"`
+	Total        int64   `json:"reported_total_bytes"`
+	Remaining    int64   `json:"reported_remaining_bytes"`
+	NativeLimit  int64   `json:"native_limit_bytes"`
+	Density      byte    `json:"density,omitempty"`
+	Position     *uint64 `json:"logical_position"`
+	Sampled      string  `json:"sampled"`
+	MAM          []byte  `json:"mam,omitempty"`
+	PositionData []byte  `json:"position_response,omitempty"`
+	EarlyWarning bool    `json:"early_warning,omitempty"`
+	MaxRecord    int     `json:"max_record"`
+	Compression  bool    `json:"compression"`
+	Encryption   bool    `json:"encryption"`
+	Barcode      string  `json:"barcode,omitempty"`
+	Alerts       []int   `json:"tape_alerts,omitempty"`
+}
+
+// Total and Remaining are device facts. Budget applies the documented native
+// limit to consumed bytes without altering those measurements.
+func (i Info) Budget() (total, remaining int64, err error) {
+	if i.Total <= 0 || i.Remaining < 0 || i.Remaining > i.Total || i.NativeLimit <= 0 {
+		return 0, 0, fmt.Errorf("capacity budget unavailable: missing native limit or inconsistent device counters")
+	}
+	total = min(i.Total, i.NativeLimit)
+	remaining = max(0, total-(i.Total-i.Remaining))
+	if i.EarlyWarning {
+		remaining = 0
+	}
+	return
 }
 
 // Positions count logical objects including filemarks, never compressed bytes.
@@ -26,18 +48,13 @@ type Device interface {
 	Locate(uint64) error
 	End() error
 	ReadRecord() ([]byte, error)
+	ReadRecordInto([]byte) (int, error)
 	WriteRecord([]byte) error
 	Filemark() error
 	Flush() error
 	SetKey([]byte) error
-	Close() error
-}
-
-// RecordReader fills a caller-owned buffer, allowing a bounded reusable read pool.
-type RecordReader interface{ ReadRecordInto([]byte) (int, error) }
-
-// Identity is a redundant public bootstrap in cartridge memory, not a directory index.
-type Identity interface {
+	SetCompression(bool) error
 	ReadIdentity() ([]byte, error)
 	WriteIdentity([]byte) error
+	Close() error
 }

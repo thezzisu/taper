@@ -1,0 +1,20 @@
+--- a/CPP/7zip/Crypto/RandGen.h
++++ b/CPP/7zip/Crypto/RandGen.h
+@@ -9,9 +9,16 @@
+ // #define USE_STATIC_SYSTEM_RAND
+ #endif
+ 
++#ifdef __wasi__
++#include <wasi/api.h>
++#define USE_STATIC_SYSTEM_RAND
++#endif
++
+ #ifdef USE_STATIC_SYSTEM_RAND
+ 
+-#ifdef _WIN32
++#ifdef __wasi__
++#define MY_RAND_GEN(data, size) __wasi_random_get(data, size)
++#elif defined(_WIN32)
+ #include <ntsecapi.h>
+ #define MY_RAND_GEN(data, size) RtlGenRandom(data, size)
+ #else

@@ -11,6 +11,7 @@ import (
 	"hash/crc32"
 	"io"
 	"os"
+	"time"
 
 	"github.com/thezzisu/taper/internal/format"
 	"golang.org/x/sys/unix"
@@ -118,7 +119,8 @@ func OpenSim(name string, writable bool) (*Sim, error) {
 	return s, nil
 }
 func (s *Sim) Info() (Info, error) {
-	return Info{Serial: s.header.Serial, Total: s.header.Capacity, Remaining: s.header.Capacity - s.used, MaxRecord: format.BlockSize, Compression: s.header.Compress, Encryption: true}, nil
+	p := s.pos
+	return Info{Serial: s.header.Serial, Total: s.header.Capacity, Remaining: s.header.Capacity - s.used, NativeLimit: s.header.Capacity, Position: &p, Sampled: time.Now().UTC().Format(time.RFC3339Nano), MaxRecord: format.BlockSize, Compression: s.header.Compress, Encryption: true}, nil
 }
 func (s *Sim) Position() (uint64, error) { return s.pos, nil }
 func (s *Sim) Locate(p uint64) error {
@@ -143,6 +145,13 @@ func (s *Sim) SetKey(k []byte) error {
 		return errors.New("key must be 32 bytes")
 	}
 	s.key = fingerprint(k)
+	return nil
+}
+func (s *Sim) SetCompression(enabled bool) error {
+	if !s.writable {
+		return errors.New("read-only simulator cannot change compression")
+	}
+	s.header.Compress = enabled
 	return nil
 }
 func (s *Sim) ReadRecord() ([]byte, error) {

@@ -1,0 +1,278 @@
+[
+  {
+    "name": "APFS/case_sensitive.bin",
+    "raw_sha256": "8e7ae7cb2b6d27c48f465635d000aa4a5004cbc21cf5777b681f7369c414ccc2",
+    "raw_bytes": 4194304,
+    "source": "https://github.com/fox-it/dissect.apfs ; corresponding license in this directory."
+  },
+  {
+    "name": "APM/plain.apm",
+    "raw_sha256": "481add2bfac67108ce75d481c884f988ee3b7d493f50755b6afd6f9c8a0e4c7e",
+    "raw_bytes": 5120,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "Ar/test_read_format_ar.ar",
+    "raw_sha256": "5f75baa148624d9646d67c95363373ae6478f8a9c326474ebbf00e2e13119092",
+    "raw_bytes": 310,
+    "source": "libarchive public test corpus; see ../libarchive-LICENSE."
+  },
+  {
+    "name": "Arj/Arj.method1.arj",
+    "raw_sha256": "e03245d52f9c2e886364d957f33454d3c7cfa5c629975353f1b9044b0a64eaa8",
+    "raw_bytes": 61038,
+    "source": "https://github.com/adamhathcock/sharpcompress/tree/master/tests/TestArchives/Archives ; see corresponding license."
+  },
+  {
+    "name": "Base64/plain.b64",
+    "raw_sha256": "55195d9c02a00698fd3a18261f3a40c81aa1f06591cca1bd91ce939c4453a304",
+    "raw_bytes": 1006,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "COFF/plain.obj",
+    "raw_sha256": "e4965b0c7a862106a01e2cd24722c3632a59efba1543527fb8b2c8bb8e14175e",
+    "raw_bytes": 723,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "Chm/7-zip.chm",
+    "raw_sha256": "162e92f24258f36c24c1907505e7cf8a1f981684d180c9e8d1e35a7bb3c1eb6f",
+    "raw_bytes": 127442,
+    "source": "Official 7-Zip 26.04 Windows distribution: https://github.com/ip7z/7zip/releases/tag/26.04 ; license: internal/archive/wasm/licenses/7zip.txt."
+  },
+  {
+    "name": "Compound/olefile-test.doc",
+    "raw_sha256": "a9645cd22f59f2314d0d0cf7ded60a536fb8422ed6b26115d2faa5442fad3336",
+    "raw_bytes": 22016,
+    "source": "https://github.com/decalage2/olefile/blob/master/tests/images/test-ole-file.doc ; see corresponding license."
+  },
+  {
+    "name": "Cpio/test_read_format_cpio_bin_be.cpio",
+    "raw_sha256": "edbeebcf109a958a46971f8c82f7fc1b9d17fd2d8d9e3eeb59bcbd96ab7c2cec",
+    "raw_bytes": 154,
+    "source": "libarchive public test corpus; see ../libarchive-LICENSE."
+  },
+  {
+    "name": "CramFS/plain.cramfs",
+    "raw_sha256": "f8526437307ef8c4a6dc9fdfe13911499f665a0e7a8ba1bf95c5f960e1d4d7c9",
+    "raw_bytes": 4096,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "ELF/plain.elf",
+    "raw_sha256": "259ec763c2aa107d276792bf602d4ec10170f3c4924f4fea71ab1113e2ae420b",
+    "raw_bytes": 1200,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "Ext/plain.ext4",
+    "raw_sha256": "f2246260d608edbd8aeef75ddab7ef4ae37e940fcc9f4f2edd022fde8847b5f2",
+    "raw_bytes": 8388608,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "FAT/plain.fat",
+    "raw_sha256": "4809ecf1479fb31df037b96e8e8c58628b49ed165265b690d5f03deee30a9cae",
+    "raw_bytes": 2097152,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "FLV/audio.flv",
+    "raw_sha256": "8a53c434806969774ce49f0c30495e9501feb81dd6177f9b161cd8f3424d3e56",
+    "raw_bytes": 773,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "GPT/plain.gpt",
+    "raw_sha256": "f8c89a023467bd9a0b1ba22cce7bac221443cab9d32c6a5e62575591b13e09c0",
+    "raw_bytes": 65536,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "IHex/plain.ihex",
+    "raw_sha256": "58fab63dc3df91a059457baf5f43e186af64a9132f6cd38519fb3dca8d3a5b48",
+    "raw_bytes": 2064,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "Iso/payload.iso",
+    "raw_sha256": "df659184710ed0f9cd79aa94833eb1651033361e445779720924915db14a57be",
+    "raw_bytes": 65536,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "LP/plain.lpimg",
+    "raw_sha256": "3ed6faaa87db6e267c31fb1d60e73e0d9e4fa776f3c3db9332bc53285f0f02f1",
+    "raw_bytes": 24576,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "MBR/fat-disk.mbr",
+    "raw_sha256": "e24e9b74b045f1afaaa2be6ce74089bb491b2a0fd0f517e4acb8fc0aae00b085",
+    "raw_bytes": 2097664,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "MachO/executable.macho",
+    "raw_sha256": "94ed890b74dbe4adc4f6b17649438c925a8fe631aacd24891b21cf74749f1ef5",
+    "raw_bytes": 928,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "MsLZ/plain.mslz",
+    "raw_sha256": "dc8542184de10b56548be48a58049bc97b93bf6a711074ce20c0c414f62ffb8f",
+    "raw_bytes": 851,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "Mub/plain.mub",
+    "raw_sha256": "672114e96924caa4cbf6b43559ea09f4d04a5e1381e279d817cafc103838af05",
+    "raw_bytes": 17072,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "NTFS/plain.ntfs",
+    "raw_sha256": "2b24ba7713908bbd6ce19dcc5dd13902ed0e2a910aa9d559b3635bd715943277",
+    "raw_bytes": 8388608,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "Nsis/nsis-setup.exe",
+    "raw_sha256": "38d49f8fe09b1c332b01d0940e57b7258f4447733643273a01c59959ad9d3b0a",
+    "raw_bytes": 1564991,
+    "source": "NSIS 3.11 official installer: https://sourceforge.net/projects/nsis/files/NSIS%203/3.11/ ; license: https://nsis.sourceforge.io/License ."
+  },
+  {
+    "name": "PE/7z.exe",
+    "raw_sha256": "95fff19b73eff77c87c0d7bd32822e43fb90dd2932459f962eb532d8dfb6ba53",
+    "raw_bytes": 577536,
+    "source": "Official 7-Zip 26.04 Windows distribution: https://github.com/ip7z/7zip/releases/tag/26.04 ; license: internal/archive/wasm/licenses/7zip.txt."
+  },
+  {
+    "name": "Ppmd/plain.pmd",
+    "raw_sha256": "1bfdc62a381571b343feb47405f0c6a8f3bd42337b458a01b118340048783d5c",
+    "raw_bytes": 59,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "QCOW/payload.qcow2",
+    "raw_sha256": "4ea7230d2150bea5a04000effff3147b6b347cc87dad8ef506a156a466613110",
+    "raw_bytes": 24576,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "Rpm/test_read_format_cpio_svr4_gzip_rpm.rpm",
+    "raw_sha256": "dcc4f3ab933335bf3822d94079fdf4f0b7ac4c65773ca8e9a973a1cec7c553d6",
+    "raw_bytes": 1909,
+    "source": "libarchive public test corpus; see ../libarchive-LICENSE."
+  },
+  {
+    "name": "SWF/plain.swf",
+    "raw_sha256": "eb649ba1acabf4c4100397bdcc5c7e0c6d0d8b9b670468696719744495542c8b",
+    "raw_bytes": 772,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "SWFc/compressed.swf",
+    "raw_sha256": "c604da7ae06611e6912f3e9ce1dbb05166e509ad3605bc2a817f26b3393e8d65",
+    "raw_bytes": 64,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "Sparse/plain.simg",
+    "raw_sha256": "5dcd228bc5b38678ac16c18b3c3a3d2ee24985e332013640dd1acbb9a7926711",
+    "raw_bytes": 4136,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "SquashFS/gzip.sqfs",
+    "raw_sha256": "7f023874793b8209d4734c286df3936181490fa269738fd8279afc162e68e6e1",
+    "raw_bytes": 12288,
+    "source": "https://github.com/fox-it/dissect.squashfs ; corresponding license in this directory."
+  },
+  {
+    "name": "TE/plain.te",
+    "raw_sha256": "004e9f254dbda704bd3c5fe3de0f87b48502791d418cb20f87d029bbc106b49f",
+    "raw_bytes": 824,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "UEFIc/plain.scap",
+    "raw_sha256": "47d1018b51931e0505447881a1b6358362249782274565bbafa156f9e78e8154",
+    "raw_bytes": 4124,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "UEFIf/plain.uefif",
+    "raw_sha256": "ab65f1f1d21d13059dd19194e742940b50b57513145468e9bd426f065eb85f85",
+    "raw_bytes": 4096,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "Udf/payload.udf",
+    "raw_sha256": "bb146cdfdfaa3114664352d8c6df2cedcad1b0e91a786110ad105b4d460b015e",
+    "raw_bytes": 563200,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "VDI/basic.vdi",
+    "raw_sha256": "d54008b1766448354b08a84ecff6d9f0abafe1a8e2b473bd0c8801fb0308034a",
+    "raw_bytes": 9438208,
+    "source": "https://github.com/fox-it/dissect.hypervisor ; corresponding license in this directory."
+  },
+  {
+    "name": "VHD/dynamic.vhd",
+    "raw_sha256": "c480b888eb23659772bc4b669a79f1850430e74b4ae5011a68195446a49a67e1",
+    "raw_bytes": 6311936,
+    "source": "https://github.com/fox-it/dissect.hypervisor ; corresponding license in this directory."
+  },
+  {
+    "name": "VHDX/fixed.vhdx",
+    "raw_sha256": "f2d743755f1872335fb1554116feecda67825719080ebb875b97dfacf7c1f590",
+    "raw_bytes": 14680064,
+    "source": "https://github.com/fox-it/dissect.hypervisor ; corresponding license in this directory."
+  },
+  {
+    "name": "VMDK/plain.vmdk",
+    "raw_sha256": "40c6171da1d8f5e1bde62d2d2348068866eef8ce2239614d662f9e2311b9d1c8",
+    "raw_bytes": 145,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "Xar/test_read_format_xar_toc_premature_stream_end_control.xar",
+    "raw_sha256": "6de5808b54b4438aab26ace8adeaa024de56488f165163942eeb9e830b759c2d",
+    "raw_bytes": 89,
+    "source": "libarchive public test corpus; see ../libarchive-LICENSE."
+  },
+  {
+    "name": "Z/test_read_format_raw.data.Z",
+    "raw_sha256": "98bb864eb5fb58004b1395c7f72f27766d4edd5989a6b25fc963fb97370fd2e3",
+    "raw_bytes": 8,
+    "source": "libarchive public test corpus; see ../libarchive-LICENSE."
+  },
+  {
+    "name": "lzma/plain.lzma",
+    "raw_sha256": "cbb4eca1f15714ecdf5492d6353867765120bc287f0571932a58c8a8c7cf3560",
+    "raw_bytes": 54,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "lzma86/plain.lzma86",
+    "raw_sha256": "2a338645a3b2044573bc18a3939b46baf5ea026b51420e6f001a466dfc438368",
+    "raw_bytes": 55,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "zstd/plain.zst",
+    "raw_sha256": "0ba57325ec2435da78e90e698cdcc49da290b233d48bcab457e3d05d9a37558e",
+    "raw_bytes": 46,
+    "source": "Synthetic format fixture generated outside taper."
+  },
+  {
+    "name": "ArjSplit/Arj.store.split.arj",
+    "raw_sha256": "216fd944e83db717e8371d5bd5207419dcaba989f9834033c578cad6634836de",
+    "raw_bytes": 19400,
+    "source": "https://github.com/adamhathcock/sharpcompress/tree/master/tests/TestArchives/Archives ; split member warning regression."
+  }
+]

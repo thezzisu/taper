@@ -55,11 +55,11 @@ func TestRoundTripAndReindex(t *testing.T) {
 			s, d, root := setup(t)
 			expected := makeSource(t, root)
 			key := bytes.Repeat([]byte{7}, 32)
-			label, e := RegisterMedia(s, d, "test", key, true)
+			label, e := RegisterMedia(s, d, "test", key, true, true)
 			if e != nil {
 				t.Fatal(e)
 			}
-			m, e := Scan(context.Background(), root, "first", policy.Rules{})
+			m, e := scanSource(context.Background(), root, "first", policy.Rules{})
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -69,7 +69,7 @@ func TestRoundTripAndReindex(t *testing.T) {
 			if e = Save(s, m); e != nil {
 				t.Fatal(e)
 			}
-			rep, e := WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, Zstd: compressed, AllowFrozen: true})
+			rep, e := WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, Zstd: compressed})
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -77,7 +77,7 @@ func TestRoundTripAndReindex(t *testing.T) {
 			if e != nil || len(rs) != 1 || rs[0].ID != rep || rs[0].Verified {
 				t.Fatal("replica state", rs, e)
 			}
-			result, e := ScanTape(context.Background(), s, d, nil, false, ReadOptions{Memory: 8 << 20})
+			result, e := verifyAll(context.Background(), s, d, nil, ReadOptions{Memory: 8 << 20})
 			if e != nil || !result.ReachedEOD || result.Archives != 1 {
 				t.Fatal(result, e)
 			}
@@ -86,7 +86,7 @@ func TestRoundTripAndReindex(t *testing.T) {
 				t.Fatal(e)
 			}
 			defer fresh.Close()
-			result, e = ScanTape(context.Background(), fresh, d, key, true, ReadOptions{Memory: 8 << 20})
+			result, e = ReindexTape(context.Background(), fresh, d, key, ReadOptions{Memory: 8 << 20})
 			if e != nil || result.Imported != 1 {
 				t.Fatal("reindex", result, e)
 			}
@@ -126,8 +126,8 @@ func TestRoundTripAndReindex(t *testing.T) {
 				t.Fatal(e)
 			}
 			defer other.Close()
-			RegisterMedia(s, other, "second", nil, false)
-			if _, e = WriteArchive(context.Background(), s, other, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e != nil {
+			RegisterMedia(s, other, "second", nil, false, true)
+			if _, e = WriteArchive(context.Background(), s, other, m, nil, WriteOptions{Memory: 8 << 20}); e != nil {
 				t.Fatal(e)
 			}
 			rs, _ = Replicas(s, m.ID.String())
@@ -159,38 +159,60 @@ func (d *failDevice) Filemark() error {
 	return d.Device.Filemark()
 }
 func TestFailuresPreserveOldReplica(t *testing.T) {
-	s, d, root := setup(t)
-	makeSource(t, root)
-	RegisterMedia(s, d, "test", nil, false)
-	m, e := Scan(context.Background(), root, "batch", policy.Rules{})
-	if e != nil {
-		t.Fatal(e)
-	}
-	Save(s, m)
-	if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e != nil {
-		t.Fatal(e)
-	}
-	for _, fault := range []*failDevice{{Device: d, failAt: 2}, {Device: d, flush: true}} {
-		if _, e = WriteArchive(context.Background(), s, fault, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e == nil {
-			t.Fatal("fault ignored")
-		}
-		rs, _ := Replicas(s, m.ID.String())
-		if len(rs) != 1 {
-			t.Fatal("incomplete replica committed")
-		}
-		result, e := ScanTape(context.Background(), s, d, nil, false, ReadOptions{Memory: 8 << 20})
-		if result.Archives != 1 || !result.ReachedEOD {
-			t.Fatal("old committed archive not found", result, e)
-		}
+	for _, flush := range []bool{false, true} {
+		t.Run(map[bool]string{false: "data-write", true: "filemark"}[flush], func(t *testing.T) {
+			s, d, root := setup(t)
+			makeSource(t, root)
+			RegisterMedia(s, d, "test", nil, false, true)
+			m, e := scanSource(context.Background(), root, "batch", policy.Rules{})
+			if e != nil {
+				t.Fatal(e)
+			}
+			Save(s, m)
+			if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20}); e != nil {
+				t.Fatal(e)
+			}
+			fault := &failDevice{Device: d, failAt: 2}
+			if flush {
+				fault.failAt, fault.flush = 0, true
+			}
+			if _, e = WriteArchive(context.Background(), s, fault, m, nil, WriteOptions{Memory: 8 << 20}); e == nil {
+				t.Fatal("fault ignored")
+			}
+			rs, _ := Replicas(s, m.ID.String())
+			if len(rs) != 1 {
+				t.Fatal("incomplete replica committed")
+			}
+			pending := m
+			pending.ID = format.NewID()
+			if err := Save(s, pending); err != nil {
+				t.Fatal(err)
+			}
+			recommendations, err := Recommend(s, pending)
+			if err != nil || len(recommendations) != 1 || recommendations[0].ID != "" {
+				t.Fatal("damaged tail recommended for another archive", recommendations, err)
+			}
+			spy := &observedTape{Device: d}
+			if _, err := WriteArchive(context.Background(), s, spy, pending, nil, WriteOptions{Memory: 8 << 20}); err == nil || !strings.Contains(err.Error(), "incomplete write") {
+				t.Fatal("unresolved write was not blocked", err)
+			}
+			if spy.writes != 0 || spy.marks != 0 || spy.locates != 0 || spy.ends != 0 || spy.reads != 0 || spy.keys != 0 {
+				t.Fatal("blocked retry operated on the tape", spy)
+			}
+			result, e := ReindexTape(context.Background(), s, d, nil, ReadOptions{Memory: 8 << 20})
+			if result.Archives != 1 || !result.ReachedEOD {
+				t.Fatal("old committed archive not found", result, e)
+			}
+		})
 	}
 }
 func TestSourceChangeAndPolicies(t *testing.T) {
 	s, d, root := setup(t)
 	makeSource(t, root)
-	RegisterMedia(s, d, "test", nil, false)
+	RegisterMedia(s, d, "test", nil, false, true)
 	os.Mkdir(filepath.Join(root, "Tmp"), 0700)
 	os.WriteFile(filepath.Join(root, "Tmp", "garbage"), []byte("junk"), 0600)
-	m, e := Scan(context.Background(), root, "batch", policy.Rules{Exclude: []string{"Tmp/**"}})
+	m, e := scanSource(context.Background(), root, "batch", policy.Rules{Exclude: []string{"Tmp/**"}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -198,11 +220,8 @@ func TestSourceChangeAndPolicies(t *testing.T) {
 		t.Fatal("rules")
 	}
 	Save(s, m)
-	if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20}); e == nil {
-		t.Fatal("writable source accepted")
-	}
 	os.WriteFile(filepath.Join(root, "tree", "small.txt"), []byte("HELLO"), 0600)
-	if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e == nil || !strings.Contains(e.Error(), "source changed") {
+	if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20}); e == nil || !strings.Contains(e.Error(), "source changed") {
 		t.Fatal("change ignored", e)
 	}
 	rs, _ := Replicas(s, m.ID.String())
@@ -214,19 +233,24 @@ func TestSourceChangeAndPolicies(t *testing.T) {
 func TestReindexSkipsUncommittedTailAndImportsRetry(t *testing.T) {
 	s, d, root := setup(t)
 	makeSource(t, root)
-	RegisterMedia(s, d, "test", nil, false)
+	RegisterMedia(s, d, "test", nil, false, true)
 	if _, e := prepareMedia(s, d, nil); e != nil {
 		t.Fatal(e)
 	}
-	m, e := Scan(context.Background(), root, "test", policy.Rules{})
+	m, e := scanSource(context.Background(), root, "test", policy.Rules{})
 	if e != nil {
 		t.Fatal(e)
 	}
 	Save(s, m)
-	if _, e = WriteArchive(context.Background(), s, &failDevice{Device: d, failAt: 2}, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e == nil {
+	if _, e = WriteArchive(context.Background(), s, &failDevice{Device: d, failAt: 2}, m, nil, WriteOptions{Memory: 8 << 20}); e == nil {
 		t.Fatal("failure ignored")
 	}
-	if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e != nil {
+	// Build a historical interrupted-tail fixture. Resuming a real tape requires
+	// explicit operator inspection; normal writes cannot skip this guard.
+	if _, e = s.DB.Exec("UPDATE replicas SET state='discarded' WHERE state='failed'"); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20}); e != nil {
 		t.Fatal(e)
 	}
 	fresh, e := catalog.Create(filepath.Join(t.TempDir(), "fresh.db"), []byte("password"))
@@ -234,7 +258,7 @@ func TestReindexSkipsUncommittedTailAndImportsRetry(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer fresh.Close()
-	result, e := ScanTape(context.Background(), fresh, d, nil, true, ReadOptions{Memory: 8 << 20})
+	result, e := ReindexTape(context.Background(), fresh, d, nil, ReadOptions{Memory: 8 << 20})
 	if result.Imported != 1 || !result.ReachedEOD || e == nil {
 		t.Fatalf("complete retry not imported, or incomplete tail unreported: %+v %v", result, e)
 	}
@@ -250,7 +274,7 @@ func BenchmarkBackupPacked(b *testing.B) {
 		b.Fatal(e)
 	}
 	defer s.Close()
-	m, e := Scan(context.Background(), root, "bench", policy.Rules{})
+	m, e := scanSource(context.Background(), root, "bench", policy.Rules{})
 	if e != nil {
 		b.Fatal(e)
 	}
@@ -262,11 +286,11 @@ func BenchmarkBackupPacked(b *testing.B) {
 		b.Fatal(e)
 	}
 	defer d.Close()
-	RegisterMedia(s, d, "bench", nil, false)
+	RegisterMedia(s, d, "bench", nil, false, true)
 	b.SetBytes(8 << 20)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 16 << 20, AllowFrozen: true}); e != nil {
+		if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 16 << 20}); e != nil {
 			b.Fatal(e)
 		}
 	}

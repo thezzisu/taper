@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -106,5 +107,28 @@ func TestSenseParsing(t *testing.T) {
 	s = parseSense(b)
 	if !s.valid || !s.ili || s.diff != -1 {
 		t.Fatal("descriptor overlength must not be silently truncated", s)
+	}
+}
+
+func TestWriteEOMDiagnosticsRetainTransferOutcome(t *testing.T) {
+	for _, response := range []byte{0x70, 0x71} {
+		b := make([]byte, 18)
+		b[0], b[2], b[7], b[13] = response|0x80, 0x40, 10, 2
+		binary.BigEndian.PutUint32(b[3:7], 4096)
+		err := parseSense(b)
+		err.opcode, err.requested, err.transferred, err.residual = 0x0a, 1<<20, (1<<20)-4096, 4096
+		if !err.eom || !err.valid || err.diff != 4096 || err.deferred != (response == 0x71) {
+			t.Fatal("EOM outcome lost", err)
+		}
+		for _, field := range []string{"opcode=0a", "ASC=00/02", "information_valid=true", "information=4096", "requested=1048576", "transferred=1044480", "residual=4096"} {
+			if !strings.Contains(err.Error(), field) {
+				t.Fatal("missing diagnostic", field, err)
+			}
+		}
+	}
+	b := make([]byte, 8)
+	b[0] = 0x73
+	if !parseSense(b).deferred {
+		t.Fatal("deferred descriptor sense lost")
 	}
 }

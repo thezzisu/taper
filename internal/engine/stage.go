@@ -282,7 +282,7 @@ func invalidateStagePlan(tx *sql.Tx) error {
 	return e
 }
 
-func StagePlan(ctx context.Context, s *catalog.Store, name string, copies int, frozen, noCache bool, progress func(int64)) (m Manifest, err error) {
+func StagePlan(ctx context.Context, s *catalog.Store, name string, copies int, noCache bool, progress func(int64)) (m Manifest, err error) {
 	if copies < 0 {
 		return m, errors.New("copies must be positive")
 	}
@@ -298,11 +298,6 @@ func StagePlan(ctx context.Context, s *catalog.Store, name string, copies int, f
 	if len(v.Files) == 0 {
 		return m, errors.New("staging area is empty")
 	}
-	if !frozen {
-		if err = ReadOnly(v.Source); err != nil {
-			return
-		}
-	}
 	if err = CheckSource(Manifest{Source: v.Source, SourceIdentity: v.Identity}); err != nil {
 		return
 	}
@@ -316,6 +311,9 @@ func StagePlan(ctx context.Context, s *catalog.Store, name string, copies int, f
 		}
 		if copies > 0 {
 			_, err = s.DB.Exec("UPDATE batches SET required_replicas=? WHERE id=?", copies, m.ID.String())
+		}
+		if err == nil {
+			err = indexArchives(ctx, s, m, archiveIndexOptions{Force: noCache})
 		}
 		return
 	}
@@ -368,6 +366,9 @@ func StagePlan(ctx context.Context, s *catalog.Store, name string, copies int, f
 		return
 	}
 	err = tx.Commit()
+	if err == nil {
+		err = indexArchives(ctx, s, m, archiveIndexOptions{Force: noCache})
+	}
 	return
 }
 

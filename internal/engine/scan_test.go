@@ -5,27 +5,44 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"github.com/thezzisu/taper/internal/catalog"
 	"github.com/thezzisu/taper/internal/policy"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
+func scanSource(ctx context.Context, root, name string, rules policy.Rules) (Manifest, error) {
+	inv, err := InspectPaths(ctx, root, rules, []string{"."})
+	if err != nil {
+		return Manifest{}, err
+	}
+	return scanInventory(ctx, inv, name, rules, nil, nil)
+}
+
+func planSource(ctx context.Context, s *catalog.Store, root, name string) (m Manifest, read int64, err error) {
+	if _, err = StageAdd(ctx, s, root, nil, nil); err != nil {
+		return
+	}
+	m, err = StagePlan(ctx, s, name, 1, false, func(n int64) { read = n })
+	return
+}
+
 func TestEmptyAndUnsupportedSourcePreflight(t *testing.T) {
 	root := t.TempDir()
-	if _, e := Scan(context.Background(), root, "empty", policy.Rules{}); e == nil {
+	if _, e := scanSource(context.Background(), root, "empty", policy.Rules{}); e == nil {
 		t.Fatal("accepted empty mountpoint")
 	}
 	os.WriteFile(filepath.Join(root, "data"), []byte("keep"), 0600)
 	os.Symlink("missing", filepath.Join(root, "link"))
-	v, e := InspectFiles(context.Background(), root, policy.Rules{})
+	v, e := InspectPaths(context.Background(), root, policy.Rules{}, []string{"."})
 	if e != nil || len(v.Issues) != 1 {
 		t.Fatal(v, e)
 	}
-	if _, e = Scan(context.Background(), root, "invalid", policy.Rules{}); e == nil {
+	if _, e = scanSource(context.Background(), root, "invalid", policy.Rules{}); e == nil {
 		t.Fatal("silently dropped unsupported file")
 	}
-	if _, e = Scan(context.Background(), root, "valid", policy.Rules{Exclude: []string{"link"}}); e != nil {
+	if _, e = scanSource(context.Background(), root, "valid", policy.Rules{Exclude: []string{"link"}}); e != nil {
 		t.Fatal(e)
 	}
 }
@@ -48,33 +65,29 @@ func TestResumePartOfLargeFile(t *testing.T) {
 	if e = cache.Checkpoint("large", info, h, 100000); e != nil {
 		t.Fatal(e)
 	}
-	m, e := ScanCached(context.Background(), root, "resume", policy.Rules{}, nil, cache)
+	m, read, e := planSource(context.Background(), s, root, "resume")
 	if e != nil {
 		t.Fatal(e)
 	}
 	want := sha256.Sum256(data)
-	if m.ResumedBytes != 100000 || m.ReadBytes != int64(len(data)-100000) || m.Contents[0].Hash != hex.EncodeToString(want[:]) {
+	if read != int64(len(data)-100000) || m.Contents[0].Hash != hex.EncodeToString(want[:]) {
 		t.Fatalf("resume mismatch: %+v", m)
 	}
 }
 func TestCacheResumeAndSourceIdentity(t *testing.T) {
 	s, _, root := setup(t)
 	os.WriteFile(filepath.Join(root, "data"), []byte("data"), 0600)
-	cache, e := NewHashCache(s, root)
-	if e != nil {
-		t.Fatal(e)
-	}
-	m, e := ScanCached(context.Background(), root, "first", policy.Rules{}, nil, cache)
-	if e != nil || m.ReadBytes != 4 {
+	m, read, e := planSource(context.Background(), s, root, "first")
+	if e != nil || read != 4 {
 		t.Fatal(m, e)
 	}
-	m, e = ScanCached(context.Background(), root, "resumed", policy.Rules{}, nil, cache)
-	if e != nil || m.CachedFiles != 1 || m.ReadBytes != 0 {
+	m, read, e = planSource(context.Background(), s, root, "resumed")
+	if e != nil || read != 0 {
 		t.Fatal(m, e)
 	}
 	os.WriteFile(filepath.Join(root, "data"), []byte("DIFF"), 0600)
-	updated, e := ScanCached(context.Background(), root, "changed", policy.Rules{}, nil, cache)
-	if e != nil || updated.CachedFiles != 0 || updated.Contents[0].Hash == m.Contents[0].Hash {
+	updated, read, e := planSource(context.Background(), s, root, "changed")
+	if e != nil || read != 4 || updated.Contents[0].Hash == m.Contents[0].Hash {
 		t.Fatal("stale hash reused", e)
 	}
 	if e = os.Rename(root, root+"-old"); e != nil {

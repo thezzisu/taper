@@ -46,5 +46,8 @@ func ValidateManifest(m Manifest) error {
 	if files != m.Files || offset != m.Logical || Digest(m.Contents) != m.Digest {
 		return errors.New("manifest digest or extent mismatch")
 	}
+	if Budget(m) == math.MaxInt64 {
+		return errors.New("encoded archive exceeds format or integer limits")
+	}
 	return nil
 }

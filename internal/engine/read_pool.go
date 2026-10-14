@@ -17,7 +17,6 @@ type readEvent struct {
 // sequentialReader keeps the drive reading ahead while CPU work consumes records.
 // Positions are tracked locally; parser lookahead never seeks the physical tape.
 type sequentialReader struct {
-	media.Device
 	ctx      context.Context
 	cancel   context.CancelFunc
 	free     chan []byte
@@ -27,26 +26,35 @@ type sequentialReader struct {
 	pending  *readEvent
 	position uint64
 	Reads    uint64
+	Bytes    int64
 	SinkWait time.Duration
-	progress func(uint64)
+	progress func(uint64, int64)
+}
+
+func readPoolCount(memory int64) (int, error) {
+	if memory == 0 {
+		memory = 1 << 30
+	}
+	if memory < 8<<20 || memory > MaxMemory {
+		return 0, errors.New("read memory must be 8 MiB–64 GiB")
+	}
+	count := int((memory - (6 << 20)) / format.BlockSize)
+	if e := availableMemory(int64(count) * format.BlockSize); e != nil {
+		return 0, e
+	}
+	return count, nil
 }
 
 func newSequentialReader(ctx context.Context, d media.Device, start uint64, memory int64) (*sequentialReader, error) {
 	if e := ctx.Err(); e != nil {
 		return nil, e
 	}
-	if memory == 0 {
-		memory = 1 << 30
-	}
-	if memory < 8<<20 || memory > MaxMemory {
-		return nil, errors.New("read memory must be 8 MiB–64 GiB")
-	}
-	count := int((memory - (6 << 20)) / format.BlockSize)
-	if e := availableMemory(int64(count) * format.BlockSize); e != nil {
+	count, e := readPoolCount(memory)
+	if e != nil {
 		return nil, e
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	r := &sequentialReader{Device: d, ctx: ctx, cancel: cancel, free: make(chan []byte, count), ready: make(chan readEvent, count), done: make(chan struct{}), position: start}
+	r := &sequentialReader{ctx: ctx, cancel: cancel, free: make(chan []byte, count), ready: make(chan readEvent, count), done: make(chan struct{}), position: start}
 	for i := 0; i < count; i++ {
 		r.free <- make([]byte, format.BlockSize)
 	}
@@ -85,19 +93,7 @@ func newSequentialReader(ctx context.Context, d media.Device, start uint64, memo
 			if ctx.Err() != nil {
 				return
 			}
-			var n int
-			var e error
-			if reader, ok := d.(media.RecordReader); ok {
-				n, e = reader.ReadRecordInto(b)
-			} else {
-				var data []byte
-				data, e = d.ReadRecord()
-				if len(data) > len(b) {
-					e = errors.New("oversize tape record")
-				} else {
-					n = copy(b, data)
-				}
-			}
+			n, e := d.ReadRecordInto(b)
 			select {
 			case r.ready <- readEvent{b[:n], e}:
 			case <-ctx.Done():
@@ -119,6 +115,7 @@ func (r *sequentialReader) ReadRecord() ([]byte, error) {
 		v := *r.pending
 		r.pending = nil
 		r.position++
+		r.Bytes += int64(len(v.b))
 		return v.b, v.err
 	}
 	select {
@@ -130,8 +127,9 @@ func (r *sequentialReader) ReadRecord() ([]byte, error) {
 		if v.err == nil || v.err == media.ErrFilemark {
 			r.position++
 			r.Reads++
+			r.Bytes += int64(len(v.b))
 			if r.progress != nil && r.Reads%1024 == 0 {
-				r.progress(1 + r.Reads)
+				r.progress(r.Reads, r.Bytes)
 			}
 		}
 		return v.b, v.err
@@ -142,9 +140,6 @@ func (r *sequentialReader) ReadRecord() ([]byte, error) {
 func (r *sequentialReader) unread(b []byte) {
 	r.pending = &readEvent{b: append([]byte(nil), b...)}
 	r.position--
+	r.Bytes -= int64(len(b))
 }
-func (r *sequentialReader) Position() (uint64, error) { return r.position, nil }
-func (r *sequentialReader) Locate(uint64) error {
-	return errors.New("sequential tape scan cannot seek")
-}
-func (r *sequentialReader) Close() error { r.cancel(); <-r.done; return nil }
+func (r *sequentialReader) Close() { r.cancel(); <-r.done }

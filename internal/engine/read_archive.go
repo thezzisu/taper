@@ -14,7 +14,7 @@ import (
 	"github.com/thezzisu/taper/internal/media"
 )
 
-func readBatch(ctx context.Context, d media.Device, dec *zstd.Decoder, begin Boundary) (m Manifest, end Boundary, commitPos uint64, err error) {
+func readBatch(ctx context.Context, d *sequentialReader, dec *zstd.Decoder, begin Boundary) (m Manifest, end Boundary, commitPos uint64, err error) {
 	id, e := format.ParseID(begin.Batch)
 	if e != nil {
 		return m, end, 0, e
@@ -23,11 +23,7 @@ func readBatch(ctx context.Context, d media.Device, dec *zstd.Decoder, begin Bou
 		return m, end, 0, errors.New("invalid batch boundary")
 	}
 	m = Manifest{ID: id, Name: begin.Name, Created: time.Now().UTC().Format(time.RFC3339), Source: "reindexed", Digest: begin.Digest, Logical: begin.Logical, Files: begin.Files}
-	dataPos, e := d.Position()
-	if e != nil {
-		return m, end, 0, e
-	}
-	stream := &batchStream{d: d, dec: dec, batch: id, ctx: ctx, position: dataPos}
+	stream := &batchStream{d: d, dec: dec, batch: id, ctx: ctx}
 	logical := int64(0)
 	count := 0
 	for logical < m.Logical {
@@ -54,10 +50,7 @@ func readBatch(ctx context.Context, d media.Device, dec *zstd.Decoder, begin Bou
 	if len(stream.pending) != 0 || count != m.Files || stream.seq != uint64(1+(m.Logical-1)/format.PayloadSize) {
 		return m, end, 0, errors.New("trailing bytes or file-count mismatch")
 	}
-	commitPos, e = d.Position()
-	if e != nil {
-		return m, end, 0, e
-	}
+	commitPos = d.position
 	b, e := d.ReadRecord()
 	if e != nil {
 		return m, end, commitPos, e
@@ -67,9 +60,7 @@ func readBatch(ctx context.Context, d media.Device, dec *zstd.Decoder, begin Bou
 		return m, end, commitPos, e
 	}
 	if f.Kind == format.Begin {
-		if r, ok := d.(*sequentialReader); ok {
-			r.unread(b)
-		}
+		d.unread(b)
 	}
 	if f.Kind != format.Commit || f.Batch != id {
 		return m, end, commitPos, errors.New("missing COMMIT")

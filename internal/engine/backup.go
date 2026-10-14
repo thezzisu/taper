@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"time"
 
@@ -47,43 +48,27 @@ func control(d media.Device, kind byte, id format.ID, v any) error {
 	return d.WriteRecord(r)
 }
 func ReadLabel(d media.Device) (l Label, err error) {
-	if identity, ok := d.(media.Identity); ok {
-		if b, e := identity.ReadIdentity(); e == nil && len(b) > 7 && string(b[:7]) == "taper1:" {
-			var fields []string
-			if json.Unmarshal(b[7:], &fields) == nil && len(fields) == 3 {
-				if _, e = format.ParseID(fields[0]); e != nil {
-					return l, e
-				}
-				info, e := d.Info()
-				if e != nil {
-					return l, e
-				}
-				return Label{ID: fields[0], Name: fields[1], Serial: info.Serial, KeyID: fields[2], Version: 1}, nil
-			}
-		}
-	}
-	if err = d.SetKey(nil); err != nil {
-		return
-	}
-	if err = d.Locate(0); err != nil {
-		return
-	}
-	b, err := d.ReadRecord()
+	// Appends identify the cartridge through MAM. Never rewind and read tape
+	// records as a fallback; full sequential readers handle the on-tape label.
+	b, err := d.ReadIdentity()
 	if err != nil {
-		return
+		return l, fmt.Errorf("read MAM identity: %w", err)
 	}
-	f, err := format.DecodeFrame(b, nil)
+	if len(b) <= 7 || string(b[:7]) != "taper1:" {
+		return l, errors.New("append requires a valid MAM identity")
+	}
+	var fields []string
+	if json.Unmarshal(b[7:], &fields) != nil || len(fields) != 3 {
+		return l, errors.New("invalid MAM identity")
+	}
+	if _, err = format.ParseID(fields[0]); err != nil {
+		return l, err
+	}
+	info, err := d.Info()
 	if err != nil {
-		return
+		return l, err
 	}
-	if f.Kind != format.Media {
-		return l, errors.New("not taper media")
-	}
-	err = json.Unmarshal(f.Payload, &l)
-	if err == nil && (l.Version != 1 || l.ID != f.Batch.String()) {
-		err = errors.New("invalid media label")
-	}
-	return
+	return Label{ID: fields[0], Name: fields[1], Serial: info.Serial, KeyID: fields[2], Version: 1}, nil
 }
 func UnlockMedia(s *catalog.Store, d media.Device, provided []byte) (l Label, err error) {
 	l, err = ReadLabel(d)
@@ -123,8 +108,19 @@ func UnlockMedia(s *catalog.Store, d media.Device, provided []byte) (l Label, er
 	return
 }
 func Budget(m Manifest) int64 {
-	n := (m.Logical + format.PayloadSize - 1) / format.PayloadSize
-	return m.Logical + n*format.HeaderSize + 2*format.BlockSize + 1024
+	n := uint64(1 + (m.Logical-1)/format.PayloadSize)
+	boundary := Boundary{Batch: m.ID.String(), Replica: (format.ID{}).String(), Media: (format.ID{}).String(), Name: m.Name, Logical: m.Logical, Files: m.Files, Digest: m.Digest}
+	begin, _ := json.Marshal(boundary)
+	boundary.Blocks = n
+	commit, _ := json.Marshal(boundary)
+	if m.Logical <= 0 || len(begin) > format.PayloadSize || len(commit) > format.PayloadSize {
+		return math.MaxInt64
+	}
+	overhead := int64(n)*format.HeaderSize + int64(len(begin)+len(commit)) + 2*format.HeaderSize
+	if m.Logical > math.MaxInt64-overhead {
+		return math.MaxInt64
+	}
+	return m.Logical + overhead
 }
 func Reserve(total int64) int64 {
 	r := total / 100
@@ -135,19 +131,34 @@ func Reserve(total int64) int64 {
 }
 
 type WriteOptions struct {
-	Memory      int64
-	Zstd        bool
-	AllowFrozen bool
-	Progress    func(uint64)
-	ProbeMBps   float64
-	MaxWait     time.Duration
-	Underflow   func(time.Duration)
-	Pause       func()
+	Memory    int64
+	Zstd      bool
+	Progress  func(uint64, int64)
+	MaxWait   time.Duration
+	Underflow func(time.Duration)
+	Pause     func()
 }
 type chunk struct {
 	b     []byte
 	first uint32
 }
+
+// Count only write commands the device confirmed. A failing command may have
+// transferred more; its sense/residual and the observed position are separate.
+type countedWriter struct {
+	media.Device
+	bytes, records int64
+}
+
+func (d *countedWriter) WriteRecord(b []byte) error {
+	if err := d.Device.WriteRecord(b); err != nil {
+		return err
+	}
+	d.bytes += int64(len(b))
+	d.records++
+	return nil
+}
+
 type packer struct {
 	ctx   context.Context
 	free  chan []byte
@@ -279,22 +290,8 @@ func WriteArchive(ctx context.Context, s *catalog.Store, d media.Device, m Manif
 	if err = ValidateManifest(m); err != nil {
 		return
 	}
-	if !o.AllowFrozen {
-		if err = ReadOnly(m.Source); err != nil {
-			return
-		}
-	}
 	if _, err = poolCount(o.Memory, m.Logical); err != nil {
 		return
-	}
-	if o.ProbeMBps > 0 {
-		probe, e := probeSupply(ctx, m, o.Memory, o.ProbeMBps, o.Zstd, nil)
-		if e != nil {
-			return "", fmt.Errorf("supply probe failed: %w", e)
-		}
-		if probe.Underflows > 0 {
-			return "", fmt.Errorf("supply probe found %d stalls at %.1f MB/s; increase the buffer or use a faster source", probe.Underflows, o.ProbeMBps)
-		}
 	}
 	pipeline, err := newPipeline(ctx, o.Memory, m.Logical, func(ctx context.Context, free chan []byte, ready chan chunk) error {
 		return Produce(ctx, m, free, ready)
@@ -316,7 +313,7 @@ func WriteArchive(ctx context.Context, s *catalog.Store, d media.Device, m Manif
 		return
 	}
 	if state != "open" {
-		return "", errors.New("media is sealed or unavailable")
+		return "", fmt.Errorf("tape is not writable: state %s", state)
 	}
 	info, err := d.Info()
 	if err != nil {
@@ -328,8 +325,12 @@ func WriteArchive(ctx context.Context, s *catalog.Store, d media.Device, m Manif
 	if err = checkMediaInfo(info); err != nil {
 		return
 	}
-	if Budget(m) > info.Remaining-Reserve(info.Total) {
-		return "", fmt.Errorf("batch requires %d native bytes plus reserve; manually split it or choose another tape", Budget(m))
+	limit, available, err := info.Budget()
+	if err != nil {
+		return "", err
+	}
+	if Budget(m) > available-Reserve(limit) {
+		return "", fmt.Errorf("archive requires %d encoded bytes plus reserve; manually split it or choose another tape", Budget(m))
 	}
 	if err = d.End(); err != nil {
 		return
@@ -340,16 +341,28 @@ func WriteArchive(ctx context.Context, s *catalog.Store, d media.Device, m Manif
 	}
 	rep = format.NewID().String()
 	boundary := Boundary{Batch: m.ID.String(), Replica: rep, Media: l.ID, Name: m.Name, Logical: m.Logical, Files: m.Files, Digest: m.Digest}
-	if _, err = s.DB.Exec("INSERT INTO replicas(id,batch_id,media_id,begin_pos,data_pos,state) VALUES(?,?,?,?,?,'writing')", rep, m.ID.String(), l.ID, start, start+1); err != nil {
+	if _, err = s.DB.Exec("INSERT INTO replicas(id,batch_id,media_id,begin_pos,state) VALUES(?,?,?,?,'writing')", rep, m.ID.String(), l.ID, start); err != nil {
 		return
 	}
+	counted := &countedWriter{Device: d}
+	d = counted
+	var seq uint64
 	defer func() {
 		if err != nil {
-			_, _ = s.DB.Exec("UPDATE replicas SET state='failed',error=? WHERE id=?", err.Error(), rep)
+			_, saveErr := s.DB.Exec("UPDATE replicas SET state='failed',error=?,blocks=?,confirmed_bytes=?,confirmed_records=? WHERE id=?", err.Error(), seq, counted.bytes, counted.records, rep)
+			err = errors.Join(err, saveErr)
 		}
-		if i, e := d.Info(); e == nil {
-			_ = recordMediaInfo(s, l.ID, i)
-			_, _ = s.DB.Exec("UPDATE media SET remaining=?,sampled=? WHERE id=?", i.Remaining, time.Now().UTC().Format(time.RFC3339), l.ID)
+		i, e := d.Info()
+		if e != nil {
+			err = errors.Join(err, fmt.Errorf("device state after write: %w", e), recordMediaFailure(s, l.ID, e))
+			return
+		}
+		if e = recordMediaInfo(s, l.ID, i); e != nil {
+			err = errors.Join(err, e, recordMediaFailure(s, l.ID, e))
+		}
+		if i.Position != nil {
+			_, e = s.DB.Exec("UPDATE replicas SET end_pos=? WHERE id=?", *i.Position, rep)
+			err = errors.Join(err, e)
 		}
 	}()
 	if err = control(d, format.Begin, m.ID, boundary); err != nil {
@@ -358,6 +371,9 @@ func WriteArchive(ctx context.Context, s *catalog.Store, d media.Device, m Manif
 	dataPos, err := d.Position()
 	if err != nil {
 		return
+	}
+	if dataPos != start+1 {
+		return rep, errors.New("tape position after BEGIN differs from layout")
 	}
 	if _, err = s.DB.Exec("UPDATE replicas SET data_pos=? WHERE id=?", dataPos, rep); err != nil {
 		return
@@ -371,7 +387,6 @@ func WriteArchive(ctx context.Context, s *catalog.Store, d media.Device, m Manif
 		defer enc.Close()
 	}
 	out := make([]byte, 0, format.BlockSize+4096)
-	var seq uint64
 	for {
 		paused, e := pipeline.Refill(d.Flush)
 		if e != nil {
@@ -400,7 +415,7 @@ func WriteArchive(ctx context.Context, s *catalog.Store, d media.Device, m Manif
 		pipeline.Release(c)
 		seq++
 		if o.Progress != nil {
-			o.Progress(seq)
+			o.Progress(seq, counted.bytes)
 		}
 	}
 	boundary.Blocks = seq
@@ -417,15 +432,27 @@ func WriteArchive(ctx context.Context, s *catalog.Store, d media.Device, m Manif
 	if err = d.Filemark(); err != nil {
 		return
 	}
+	endPos, err := d.Position()
+	if err != nil {
+		return rep, err
+	}
+	if endPos != commitPos+2 {
+		return rep, errors.New("tape position after durable filemark differs from layout")
+	}
 	tx, e := s.DB.Begin()
 	if e != nil {
 		return rep, e
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec("UPDATE replicas SET state='committed',commit_pos=?,blocks=? WHERE id=?", commitPos, seq, rep); err != nil {
+	if _, err = tx.Exec("UPDATE replicas SET state='committed',commit_pos=?,blocks=?,confirmed_bytes=?,confirmed_records=?,end_pos=? WHERE id=?", commitPos, seq, counted.bytes, counted.records, endPos, rep); err != nil {
 		return
 	}
 	if _, err = tx.Exec("UPDATE batches SET state='committed' WHERE id=?", m.ID.String()); err != nil {
+		return
+	}
+	// The pre-write sample cannot describe a committed append. Keep it blocked
+	// atomically with the commit, including a crash before the final sample.
+	if _, err = tx.Exec("UPDATE media_health SET unhealthy=1 WHERE media_id=?", l.ID); err != nil {
 		return
 	}
 	err = tx.Commit()

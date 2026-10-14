@@ -2,43 +2,58 @@ package catalog
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-func TestVersionOneMigrationPreservesCatalog(t *testing.T) {
+func checkIntegrity(s *Store) error {
+	var result string
+	if e := s.DB.QueryRow("PRAGMA integrity_check").Scan(&result); e != nil {
+		return e
+	}
+	if result != "ok" {
+		return fmt.Errorf("catalog integrity: %s", result)
+	}
+	return nil
+}
+
+func TestOpenRejectsUnsupportedSchemaWithoutChangingIt(t *testing.T) {
 	name := filepath.Join(t.TempDir(), "catalog.db")
-	pass := []byte("migration test")
+	pass := []byte("schema test")
 	s, e := Create(name, pass)
 	if e != nil {
 		t.Fatal(e)
 	}
-	if _, e = s.DB.Exec("INSERT INTO media VALUES('id','label','serial',100,90,'time','open','key-id',?)", []byte{1, 2, 3}); e != nil {
+	if _, e = s.DB.Exec("UPDATE schema_version SET version=999"); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = s.DB.Exec("DROP TABLE stage_files; DROP TABLE stage_exclusions; DROP TABLE stage; UPDATE schema_version SET version=1"); e != nil {
+	export := filepath.Join(t.TempDir(), "export")
+	if e = s.Export(export); e != nil {
 		t.Fatal(e)
 	}
-	s.Close()
-	s, e = Open(name, pass)
+	if e = s.Close(); e != nil {
+		t.Fatal(e)
+	}
+	before, e := os.ReadFile(name)
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer s.Close()
-	var version, count int
-	var key []byte
-	if e = s.DB.QueryRow("SELECT version FROM schema_version").Scan(&version); e != nil || version != 2 {
-		t.Fatal(version, e)
+	if s, e = Open(name, pass); e == nil {
+		s.Close()
+		t.Fatal("unsupported schema accepted")
 	}
-	if e = s.DB.QueryRow("SELECT key FROM media WHERE serial='serial'").Scan(&key); e != nil || !bytes.Equal(key, []byte{1, 2, 3}) {
-		t.Fatal("media/key lost in migration", e)
+	after, e := os.ReadFile(name)
+	if e != nil || !bytes.Equal(before, after) {
+		t.Fatal("opening an unsupported schema changed the catalog", e)
 	}
-	if e = s.DB.QueryRow("SELECT COUNT(*) FROM stage_files").Scan(&count); e != nil || count != 0 {
-		t.Fatal(count, e)
+	destination := filepath.Join(t.TempDir(), "imported.db")
+	if e = Import(export, destination, pass); e == nil {
+		t.Fatal("unsupported snapshot imported")
 	}
-	if e = s.Integrity(); e != nil {
-		t.Fatal(e)
+	if _, e = os.Stat(destination); !os.IsNotExist(e) {
+		t.Fatal("unsupported snapshot created a destination", e)
 	}
 }
 
@@ -49,10 +64,10 @@ func TestEncryptionRekeyExport(t *testing.T) {
 		t.Fatal(e)
 	}
 	secret := "PRIVATE_PATH_SHOULD_NOT_APPEAR"
-	if _, e = s.DB.Exec("INSERT INTO media VALUES(?,?,?,?,?,?,?,?,?)", secret, secret, "serial", 999, 999, "today", "open", "", nil); e != nil {
+	if _, e = s.DB.Exec("INSERT INTO media(id,label,serial,total,remaining,sampled,state,key_id,key,hardware_compression) VALUES(?,?,?,?,?,?,?,?,?,?)", secret, secret, "serial", 999, 999, "today", "open", "", nil, false); e != nil {
 		t.Fatal(e)
 	}
-	if e = s.Integrity(); e != nil {
+	if e = checkIntegrity(s); e != nil {
 		t.Fatal(e)
 	}
 	for _, p := range []string{name, name + "-wal"} {
@@ -78,7 +93,7 @@ func TestEncryptionRekeyExport(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer s.Close()
-	if e = s.Integrity(); e != nil {
+	if e = checkIntegrity(s); e != nil {
 		t.Fatal(e)
 	}
 	imported := filepath.Join(t.TempDir(), "restored.db")
@@ -89,8 +104,12 @@ func TestEncryptionRekeyExport(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if e = copy.Integrity(); e != nil {
+	if e = checkIntegrity(copy); e != nil {
 		t.Fatal(e)
+	}
+	var compression bool
+	if e = copy.DB.QueryRow("SELECT hardware_compression FROM media WHERE serial='serial'").Scan(&compression); e != nil || compression {
+		t.Fatal("hardware compression preference lost in export/import", compression, e)
 	}
 	copy.Close()
 }

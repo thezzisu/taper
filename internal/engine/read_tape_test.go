@@ -7,24 +7,25 @@ import (
 	"testing"
 
 	"github.com/thezzisu/taper/internal/catalog"
+	"github.com/thezzisu/taper/internal/media"
 	"github.com/thezzisu/taper/internal/policy"
 )
 
 func TestWholeTapeVerifyAndReindexStaySequential(t *testing.T) {
 	s, d, root := setup(t)
 	makeSource(t, root)
-	RegisterMedia(s, d, "test", nil, true)
+	RegisterMedia(s, d, "test", nil, true, true)
 	var ids []string
 	var middle uint64
 	for i := 0; i < 3; i++ {
-		m, e := Scan(context.Background(), root, "archive", policy.Rules{})
+		m, e := scanSource(context.Background(), root, "archive", policy.Rules{})
 		if e != nil {
 			t.Fatal(e)
 		}
 		if e = Save(s, m); e != nil {
 			t.Fatal(e)
 		}
-		if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true, Zstd: i == 1}); e != nil {
+		if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, Zstd: i == 1}); e != nil {
 			t.Fatal(e)
 		}
 		rs, _ := Replicas(s, m.ID.String())
@@ -45,7 +46,13 @@ func TestWholeTapeVerifyAndReindexStaySequential(t *testing.T) {
 			defer target.Close()
 		}
 		spy := &observedTape{Device: d}
-		result, e := ScanTape(context.Background(), target, spy, nil, reindex, ReadOptions{Memory: 8 << 20})
+		var result TapeResult
+		var e error
+		if reindex {
+			result, e = ReindexTape(context.Background(), target, spy, nil, ReadOptions{Memory: 8 << 20})
+		} else {
+			result, e = verifyAll(context.Background(), target, spy, nil, ReadOptions{Memory: 8 << 20})
+		}
 		if e != nil || !result.ReachedEOD || result.Archives != 3 || result.Records != end {
 			t.Fatal(result, e)
 		}
@@ -59,7 +66,7 @@ func TestWholeTapeVerifyAndReindexStaySequential(t *testing.T) {
 	}
 	defer fresh.Close()
 	spy := &observedTape{Device: d, corruptEnabled: true, corrupt: middle}
-	result, e := ScanTape(context.Background(), fresh, spy, nil, true, ReadOptions{Memory: 8 << 20})
+	result, e := ReindexTape(context.Background(), fresh, spy, nil, ReadOptions{Memory: 8 << 20})
 	if e == nil || !result.ReachedEOD || result.Imported != 2 || result.Records != end || spy.locates != 1 {
 		t.Fatal("corrupt middle archive prevented full sequential scan", result, e, spy.locates)
 	}
@@ -78,17 +85,25 @@ func TestWholeTapeUsesSavedKey(t *testing.T) {
 	os.WriteFile(filepath.Join(root, "secret"), []byte("test"), 0600)
 	key := make([]byte, 32)
 	key[0] = 19
-	RegisterMedia(s, d, "keyed", key, true)
-	m, e := Scan(context.Background(), root, "keyed", policy.Rules{})
+	RegisterMedia(s, d, "keyed", key, true, true)
+	m, e := scanSource(context.Background(), root, "keyed", policy.Rules{})
 	if e != nil {
 		t.Fatal(e)
 	}
 	Save(s, m)
-	if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e != nil {
+	if _, e = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20}); e != nil {
 		t.Fatal(e)
 	}
-	result, e := ScanTape(context.Background(), s, d, nil, false, ReadOptions{Memory: 8 << 20})
+	result, e := verifyAll(context.Background(), s, d, nil, ReadOptions{Memory: 8 << 20})
 	if e != nil || !result.ReachedEOD {
 		t.Fatal(result, e)
 	}
+}
+
+func verifyAll(ctx context.Context, s *catalog.Store, d media.Device, key []byte, o ReadOptions) (TapeResult, error) {
+	p, e := PlanVerification(s, d, nil)
+	if e != nil {
+		return TapeResult{}, e
+	}
+	return VerifyTape(ctx, s, d, p, key, o)
 }

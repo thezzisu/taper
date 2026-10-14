@@ -22,18 +22,11 @@ type Issue struct {
 	Reason string `json:"reason"`
 }
 type Inventory struct {
-	Root          string          `json:"root"`
-	Files         []InventoryFile `json:"files,omitempty"`
-	Issues        []Issue         `json:"issues,omitempty"`
-	Bytes         int64           `json:"logical_bytes"`
-	ExcludedBytes int64           `json:"excluded_bytes"`
-	ExcludedFiles int             `json:"excluded_files"`
-	Identity      SourceIdentity  `json:"identity"`
-	Excluded      []Exclusion     `json:"excluded,omitempty"`
-}
-
-func InspectFiles(ctx context.Context, root string, rules policy.Rules) (v Inventory, err error) {
-	return InspectPaths(ctx, root, rules, []string{"."})
+	Root     string          `json:"root"`
+	Files    []InventoryFile `json:"files,omitempty"`
+	Issues   []Issue         `json:"issues,omitempty"`
+	Identity SourceIdentity  `json:"identity"`
+	Excluded []Exclusion     `json:"excluded,omitempty"`
 }
 
 func InspectPaths(ctx context.Context, root string, rules policy.Rules, paths []string) (v Inventory, err error) {
@@ -56,6 +49,7 @@ func InspectPaths(ctx context.Context, root string, rules policy.Rules, paths []
 		return
 	}
 	seen := map[string]string{}
+	var total int64
 	visit := func(p string, d fs.DirEntry, e error) error {
 		if e != nil {
 			return e
@@ -76,8 +70,6 @@ func InspectPaths(ctx context.Context, root string, rules policy.Rules, paths []
 			return e
 		}
 		if !rules.Keep(canonical) {
-			v.ExcludedFiles++
-			v.ExcludedBytes += info.Size()
 			v.Excluded = append(v.Excluded, Exclusion{Path: canonical, Size: info.Size(), Reason: "rule"})
 			return nil
 		}
@@ -96,8 +88,8 @@ func InspectPaths(ctx context.Context, root string, rules policy.Rules, paths []
 			return fmt.Errorf("normalized path collision: %s", canonical)
 		}
 		seen[canonical] = rel
-		v.Bytes += info.Size()
-		if v.Bytes < 0 {
+		total += info.Size()
+		if total < 0 {
 			return fmt.Errorf("source size overflow")
 		}
 		v.Files = append(v.Files, InventoryFile{canonical, rel, info.Size(), info.ModTime().UnixNano()})
@@ -112,7 +104,7 @@ func InspectPaths(ctx context.Context, root string, rules policy.Rules, paths []
 			return
 		}
 	}
-	if err == nil && len(v.Files) == 0 && v.ExcludedFiles == 0 {
+	if err == nil && len(v.Files) == 0 && len(v.Excluded) == 0 {
 		err = fmt.Errorf("source directory %s is empty; check that the filesystem is mounted", root)
 	}
 	if err == nil {

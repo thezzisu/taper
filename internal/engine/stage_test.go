@@ -3,6 +3,8 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,9 +12,103 @@ import (
 	"github.com/thezzisu/taper/internal/media"
 )
 
+type unreadableIdentity struct {
+	*observedTape
+	identity []byte
+	err      error
+}
+
+func (d *unreadableIdentity) ReadIdentity() ([]byte, error) { return d.identity, d.err }
+
+func TestAppendRejectsBadMAMWithoutReadingTape(t *testing.T) {
+	s, d, root := setup(t)
+	makeSource(t, root)
+	if _, e := RegisterMedia(s, d, "test", nil, true, true); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := prepareMedia(s, d, nil); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := StageAdd(context.Background(), s, root, nil, nil); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := StagePlan(context.Background(), s, "append", 1, false, nil); e != nil {
+		t.Fatal(e)
+	}
+	for _, name := range []string{"absent", "malformed", "invalid-id", "io-error"} {
+		t.Run(name, func(t *testing.T) {
+			spy := &observedTape{Device: d}
+			fault := &unreadableIdentity{observedTape: spy}
+			switch name {
+			case "malformed":
+				fault.identity = []byte("taper1:{")
+			case "invalid-id":
+				fault.identity = []byte(`taper1:["invalid","test",""]`)
+			case "io-error":
+				fault.err = errors.New("MAM unavailable")
+			}
+			if _, _, e := StageWrite(context.Background(), s, fault, nil, WriteOptions{Memory: 8 << 20}); e == nil {
+				t.Fatal("append accepted unusable MAM")
+			}
+			if spy.reads+spy.writes+spy.marks+spy.locates+spy.ends+spy.keys+spy.flushes+spy.compressions != 0 {
+				t.Fatalf("failed append touched tape: %+v", spy)
+			}
+		})
+	}
+}
+
+func TestAppendBatchesThenOneFullVerification(t *testing.T) {
+	s, d, root := setup(t)
+	if _, e := RegisterMedia(s, d, "test", nil, true, true); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := prepareMedia(s, d, nil); e != nil {
+		t.Fatal(e)
+	}
+	var ids []string
+	for i := 0; i < 2; i++ {
+		if e := os.WriteFile(filepath.Join(root, "file"), []byte(fmt.Sprint(i)), 0600); e != nil {
+			t.Fatal(e)
+		}
+		if _, e := StageAdd(context.Background(), s, root, nil, nil); e != nil {
+			t.Fatal(e)
+		}
+		if _, e := StagePlan(context.Background(), s, "batch", 1, true, nil); e != nil {
+			t.Fatal(e)
+		}
+		spy := &observedTape{Device: d}
+		id, _, e := StageWrite(context.Background(), s, spy, nil, WriteOptions{Memory: 8 << 20})
+		if e != nil {
+			t.Fatal(e)
+		}
+		if spy.reads != 0 || spy.locates != 0 || spy.ends != 1 || spy.writes == 0 {
+			t.Fatalf("append did not stay write-only: %+v", spy)
+		}
+		replicas, e := Replicas(s, id)
+		if e != nil || len(replicas) != 1 || replicas[0].Verified {
+			t.Fatal("append must remain unverified", replicas, e)
+		}
+		ids = append(ids, id)
+	}
+	end, _ := d.Position()
+	spy := &observedTape{Device: d}
+	result, e := verifyAll(context.Background(), s, spy, nil, ReadOptions{Memory: 8 << 20})
+	if e != nil || !result.ReachedEOD || result.Archives != 2 || result.Records != end || spy.locates != 1 || spy.ends != 0 || spy.writes != 0 || uint64(spy.reads) != end+1 {
+		t.Fatal("final verification was not one forward pass", result, e, spy)
+	}
+	for _, id := range ids {
+		replicas, e := Replicas(s, id)
+		if e != nil || len(replicas) != 1 || !replicas[0].Verified {
+			t.Fatal("final pass did not verify every batch", replicas, e)
+		}
+	}
+}
+
 type observedTape struct {
 	media.Device
 	reads, writes, marks, locates, ends, keys, flushes int
+	compressions                                       int
+	compressionError                                   error
 	corrupt                                            uint64
 	corruptEnabled                                     bool
 }
@@ -21,7 +117,7 @@ func (d *observedTape) ReadRecord() ([]byte, error) { d.reads++; return d.Device
 func (d *observedTape) ReadRecordInto(b []byte) (int, error) {
 	d.reads++
 	pos, _ := d.Device.Position()
-	n, e := d.Device.(media.RecordReader).ReadRecordInto(b)
+	n, e := d.Device.ReadRecordInto(b)
 	if e == nil && d.corruptEnabled && pos == d.corrupt && n > 64 {
 		b[n-1] ^= 1
 	}
@@ -33,11 +129,12 @@ func (d *observedTape) Locate(p uint64) error      { d.locates++; return d.Devic
 func (d *observedTape) End() error                 { d.ends++; return d.Device.End() }
 func (d *observedTape) SetKey(k []byte) error      { d.keys++; return d.Device.SetKey(k) }
 func (d *observedTape) Flush() error               { d.flushes++; return d.Device.Flush() }
-func (d *observedTape) ReadIdentity() ([]byte, error) {
-	return d.Device.(media.Identity).ReadIdentity()
-}
-func (d *observedTape) WriteIdentity(b []byte) error {
-	return d.Device.(media.Identity).WriteIdentity(b)
+func (d *observedTape) SetCompression(enabled bool) error {
+	d.compressions++
+	if d.compressionError != nil {
+		return d.compressionError
+	}
+	return d.Device.SetCompression(enabled)
 }
 
 func TestMediaRegistrationIsReadOnlyOnOccupiedTape(t *testing.T) {
@@ -46,19 +143,19 @@ func TestMediaRegistrationIsReadOnlyOnOccupiedTape(t *testing.T) {
 	d.Filemark()
 	pos, _ := d.Position()
 	spy := &observedTape{Device: d}
-	if _, e := RegisterMedia(s, spy, "existing", nil, true); e != nil {
+	if _, e := RegisterMedia(s, spy, "existing", nil, true, true); e != nil {
 		t.Fatal(e)
 	}
 	after, _ := d.Position()
-	if after != pos || spy.reads+spy.writes+spy.marks+spy.locates+spy.ends+spy.keys+spy.flushes != 0 {
+	if after != pos || spy.reads+spy.writes+spy.marks+spy.locates+spy.ends+spy.keys+spy.flushes+spy.compressions != 0 {
 		t.Fatalf("registration touched tape: %+v", spy)
 	}
 	os.WriteFile(filepath.Join(root, "file"), []byte("data"), 0600)
 	StageAdd(context.Background(), s, root, nil, nil)
-	if _, e := StagePlan(context.Background(), s, "archive", 1, true, false, nil); e != nil {
+	if _, e := StagePlan(context.Background(), s, "archive", 1, false, nil); e != nil {
 		t.Fatal(e)
 	}
-	if _, _, e := StageWrite(context.Background(), s, spy, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e == nil {
+	if _, _, e := StageWrite(context.Background(), s, spy, nil, WriteOptions{Memory: 8 << 20}); e == nil {
 		t.Fatal("occupied tape overwritten")
 	}
 	if spy.writes != 0 || spy.marks != 0 {
@@ -72,11 +169,11 @@ func TestStagingSelectionPlanAndReplicaLifecycle(t *testing.T) {
 	if _, e := StageAdd(context.Background(), s, root, []string{"."}, nil); e != nil {
 		t.Fatal(e)
 	}
-	first, e := StagePlan(context.Background(), s, "first", 2, true, false, nil)
+	first, e := StagePlan(context.Background(), s, "first", 2, false, nil)
 	if e != nil {
 		t.Fatal(e)
 	}
-	same, e := StagePlan(context.Background(), s, "", 0, true, false, nil)
+	same, e := StagePlan(context.Background(), s, "", 0, false, nil)
 	if e != nil || same.ID != first.ID {
 		t.Fatal("plan is not stable", e)
 	}
@@ -95,20 +192,20 @@ func TestStagingSelectionPlanAndReplicaLifecycle(t *testing.T) {
 	if old != 0 {
 		t.Fatal("unused old plan was retained")
 	}
-	if _, _, e := StageWrite(context.Background(), s, d, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e == nil {
+	if _, _, e := StageWrite(context.Background(), s, d, nil, WriteOptions{Memory: 8 << 20}); e == nil {
 		t.Fatal("unplanned selection written")
 	}
-	m, e := StagePlan(context.Background(), s, "final", 2, true, false, nil)
+	m, e := StagePlan(context.Background(), s, "final", 2, false, nil)
 	if e != nil {
 		t.Fatal(e)
 	}
 	if m.Files != len(files)-1 {
 		t.Fatal(m.Files)
 	}
-	if _, e = RegisterMedia(s, d, "one", nil, true); e != nil {
+	if _, e = RegisterMedia(s, d, "one", nil, true, true); e != nil {
 		t.Fatal(e)
 	}
-	id, _, e := StageWrite(context.Background(), s, d, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true})
+	id, _, e := StageWrite(context.Background(), s, d, nil, WriteOptions{Memory: 8 << 20})
 	if e != nil || id != m.ID.String() {
 		t.Fatal(id, e)
 	}
@@ -117,7 +214,7 @@ func TestStagingSelectionPlanAndReplicaLifecycle(t *testing.T) {
 		t.Fatal("stage cleared before required copies existed")
 	}
 	pos, _ := d.Position()
-	if _, _, e = StageWrite(context.Background(), s, d, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e == nil {
+	if _, _, e = StageWrite(context.Background(), s, d, nil, WriteOptions{Memory: 8 << 20}); e == nil {
 		t.Fatal("duplicate same-tape copy allowed")
 	}
 	after, _ := d.Position()
@@ -131,10 +228,10 @@ func TestStagingSelectionPlanAndReplicaLifecycle(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer other.Close()
-	if _, e = RegisterMedia(s, other, "two", nil, true); e != nil {
+	if _, e = RegisterMedia(s, other, "two", nil, true, true); e != nil {
 		t.Fatal(e)
 	}
-	if _, _, e = StageWrite(context.Background(), s, other, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e != nil {
+	if _, _, e = StageWrite(context.Background(), s, other, nil, WriteOptions{Memory: 8 << 20}); e != nil {
 		t.Fatal(e)
 	}
 	st, _ = LoadStage(s)
@@ -151,12 +248,12 @@ func TestStagingRejectsChangedAliasBeforeTapeIO(t *testing.T) {
 	s, d, root := setup(t)
 	makeSource(t, root)
 	StageAdd(context.Background(), s, root, nil, nil)
-	if _, e := StagePlan(context.Background(), s, "test", 1, true, false, nil); e != nil {
+	if _, e := StagePlan(context.Background(), s, "test", 1, false, nil); e != nil {
 		t.Fatal(e)
 	}
 	os.WriteFile(filepath.Join(root, "tree/large.bin"), []byte("changed alias"), 0600)
 	spy := &observedTape{Device: d}
-	if _, _, e := StageWrite(context.Background(), s, spy, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e == nil {
+	if _, _, e := StageWrite(context.Background(), s, spy, nil, WriteOptions{Memory: 8 << 20}); e == nil {
 		t.Fatal("changed alias accepted")
 	}
 	if spy.reads+spy.writes+spy.marks+spy.locates+spy.ends+spy.keys != 0 {
@@ -182,11 +279,11 @@ func TestStageAddRefreshAndWriterFailure(t *testing.T) {
 	if len(st.Files) != 1 {
 		t.Fatal("deleted path remained staged", st.Files)
 	}
-	if _, e := StagePlan(context.Background(), s, "test", 1, true, false, nil); e != nil {
+	if _, e := StagePlan(context.Background(), s, "test", 1, false, nil); e != nil {
 		t.Fatal(e)
 	}
-	RegisterMedia(s, d, "test", nil, true)
-	if _, _, e := StageWrite(context.Background(), s, &failDevice{Device: d, failAt: 2}, nil, WriteOptions{Memory: 8 << 20, AllowFrozen: true}); e == nil {
+	RegisterMedia(s, d, "test", nil, true, true)
+	if _, _, e := StageWrite(context.Background(), s, &failDevice{Device: d, failAt: 2}, nil, WriteOptions{Memory: 8 << 20}); e == nil {
 		t.Fatal("injected failure ignored")
 	}
 	st, _ = LoadStage(s)

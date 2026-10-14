@@ -1,107 +1,210 @@
 # Operations
 
-## Qualification
+## Device access
 
-1. Run unit tests, race detection, decoder fuzzing, vet, and the simulated CLI
-   workflow. Simulation never opens the real device.
-2. Probe the real device and check MAM capacities, record limits and encryption
-   capability. Capacity is planned in raw native bytes with a 1% / 2 GiB reserve.
-3. Register a cartridge read-only, preserving its independent
-   recovery key and encrypted catalog outside the source disk.
-4. Test synthetic aliases, record boundaries and source failures locally. Cover
-   the worker transport and decoder as well as the packer, including allocations,
-   garbage collection and total process memory under sustained load.
-5. Make the approved write and, if requested, one full verification pass. Every
-   archive on that tape uses its original hardware key. Device key material is
-   cleared when the worker closes.
+Use the Linux SG node for the intended sequential-access drive. The CLI opens it
+directly under the current account, normally with access through the `tape` group.
+It never starts a privilege helper. If a host requires elevation, the operator
+chooses it outside taper. Long commands can run inside tmux.
 
-One approved write permits at most one tape reading pass. An interrupted scan
-already counts: do not restart verification, append a reindex pass or perform
-spot reads to investigate an error. Stop device operations and analyze the saved
-logs and local tests. Tape is not a debugging or benchmarking loop.
+`/dev/sgN` numbering can change. A system-managed persistent symlink to an SG node
+is accepted, but taper does not install udev rules or discover a drive by serial.
+The common `/dev/tape/by-id/*-nst` links point at the `st` driver, which is not a
+taper backend. Drive identity and cartridge identity are different: MAM serial,
+barcode and taper media ID describe the loaded cartridge.
 
-Run the main CLI as the ordinary user, granting PolicyKit authorization only to
-its typed device worker. Elevating an entire orchestration session prevents the
-ordinary user from promptly cancelling the main process without another prompt.
+`tape probe` queries capabilities, cartridge capacity and TapeAlert flags.
+`tape register` registers that cartridge in SQLite using device/MAM queries. These
+commands do not read tape records, seek, erase, or write a tape label. Registration
+also saves the hardware compression preference (default on) without changing the
+drive. It can succeed on occupied media; the first write refuses an uninitialized
+tape unless its empty check succeeds.
 
-The native backend currently supports Linux, partition 0, manually loaded tape,
-and explicit SG_IO records. It issues READ POSITION long form and LOCATE(16).
-The read/write roles are distinct. It does not issue erase, format, raw user CDBs,
-or automatic tape swaps. Device errors are not blindly retried.
+On the first write to a new tape, taper performs that empty check at BOT, writes
+the public label and MAM identity, and then starts the archive. Later appends use
+MAM identity and locate the end of data. Missing or invalid MAM stops the append;
+it never triggers a fallback read from BOT. Device I/O errors are not blindly retried.
 
-## Key handling
+## Choose, plan, write
 
-The master passphrase protects the encrypted SQLite catalog, including optional
-stored independent tape keys. Argon2id parameters are fixed by unlock version 1:
-64 MiB, 3 iterations, 4 lanes, random 16-byte salt. An XChaCha20-Poly1305 envelope
-wraps a random database key. The encrypted database uses the established Adiantum
-VFS. Rekey atomically replaces the unlock descriptor and syncs its directory.
+1. Prepare a stable local source and explicit include/exclude rules. Keep complete
+   related file groups together when choosing what fits on a cartridge.
+2. `stage add` records paths and metadata. `stage rm` removes them from the stage.
+3. `stage plan` reads file contents as needed to build hashes, record-byte budgets,
+   duplicate information and tape recommendations. Reuse a valid existing plan;
+   `--no-cache` explicitly requests rehashing.
+4. `stage write` checks the source identity and metadata, pre-fills the write pool,
+   and appends to the drive supplied with `--device`. It recomputes content hashes
+   while supplying the write; source contents must remain unchanged.
+5. Export the catalog after a committed write. Check `verified` separately from
+   `committed` before deciding whether to release source data.
 
-A tape recovery card is indispensable if the catalog is lost: the master
-passphrase does not derive a tape key. Keep catalog exports and recovery cards
-outside both the source filesystem and the source repository. Do not place secret
-arguments in process command lines. Private pass/key files and hidden terminal
-prompts are supported.
+Keep selected files unchanged from `stage add` through planning and all replica
+writes. Taper does not require a read-only mount or create a snapshot. Source
+identity, metadata and streaming hashes detect changes; the operator supplies a
+stable source.
 
-## States and recovery
+Recommendations use the last saved cartridge capacity/health sample. They favor
+fitting tapes with less remaining space and exclude tapes already holding that
+archive's replica. Writing checks the loaded medium again. Budgets assume
+no compression gain and reserve the larger of 1% of the native limit or 2 GiB.
 
-`stage add/rm` change a persistent selection. `stage plan` creates a complete
-hashed manifest and later selection edits invalidate it. `archive list` includes
-only archives with a successful commit. A replica transitions from
-`writing` to `committed` after synchronous filemark success; failures record their
-error separately. `verified` is an optional timestamp. Reindex checks the digest
-and imports only complete committed replicas, while reporting corrupt/incomplete
-batches. Existing committed replicas are unaffected by failed later appends.
+`reported_total_bytes` and `reported_remaining_bytes` are the device's exact
+integer counters converted from MiB (2^20 bytes). Raw MAM and READ POSITION
+responses, logical position, flags and the query time are retained in immutable
+`media_samples` rows. The latest measurements are also available offline. They
+describe that observation, not later writes by another program.
+The counters' resolution remains 1 MiB; conversion to bytes does not turn them
+into a byte-resolution measurement of the tape's physical free space.
 
-Media state is `registered` before its first write, then `open`. Offline capacity
-recommendations use the last measurement and are advisory. The loaded medium is
-rechecked immediately before writing. Capacity gains from hardware compression
-are measured after committing and available to future batches, never assumed in
-the current batch budget. If the batch does not fit, manually split it or provide
-another tape; a single replica never spans tapes.
+`write_budget_bytes` is separate: native limit minus reported consumed bytes,
+then minus the explicit reserve. It never discounts bytes already consumed.
+The current SG backend recognizes LTO-6 density 0x5a and its documented
+2,500,000,000,000-byte native limit. Other densities have no budget until their
+native limit is supported explicitly. An end-of-partition early warning prohibits
+further archive writes, regardless of the remaining-capacity counter. Incomplete
+writes or unknown capacity evidence produce no offline write recommendation.
+The budget is a conservative admission rule, not a promise of the exact physical
+end-of-tape location. A committed write invalidates its pre-write capacity sample
+in the same catalog transaction; only a saved post-write sample restores it.
 
-## Continuous supply
+`stage plan` reports exact `encoded_bytes` and `data_records` for the uncompressed
+archive stream, including its BEGIN and COMMIT records. Filemarks are logical
+objects, not invented byte costs. Hardware framing/ECC costs are reflected in
+device capacity consumption; the reserve remains explicit. Software zstd can
+reduce encoded size and never increases a record's stored length.
 
-The bounded pool supports 8 MiB through 64 GiB. Large allocation checks available
-RAM with 2 GiB of headroom and releases dead Go heaps before allocating. A real
-write begins only after prefill. If the complete selection fits, hashing and
-buffering finish before any tape write. At low water the writer synchronously
-flushes with WRITE FILEMARKS count zero, which adds no tape object, then refills
-the pool before resuming. Cancellation joins the producer. Unplanned source
-stalls still terminate the uncommitted replica. A larger pool reduces the
-number of deliberate stop/start cycles when the source is persistently slow.
+Each replica records confirmed host-to-drive bytes and records, DATA block count,
+and observed logical end position. Counters are accumulated in memory and saved
+after the stream, not with a SQLite transaction per record. If a write fails,
+confirmed counters exclude the ambiguous failing command; the full sense and
+transfer residual are retained separately. A crashed process or historical record
+without sufficient evidence has NULL counters, never a guessed zero. Verification
+and reindexing measure encoded record lengths in their single sequential pass.
 
-Before the first production write, complete a supply probe with the actual
-immutable batch, intended pool size, and a consumption rate justified by the
-drive qualification. Cache hits, background disk traffic and hardware compression
-must be considered when interpreting this result. A finite pool cannot correct
-a permanent producer deficit. The default 2-second stall limit bounds a failure;
-it is not a claim that all physical drive backhitches can be prevented.
+Tapes with an unresolved `writing` or `failed` replica are excluded from
+recommendations and refuse further appends. Their tail requires explicit
+operator investigation; neither registration nor a retry erases it. Sense errors
+retain the command, deferred-error flag, information field and transfer residual
+for diagnosis. An EOM response is not automatically retried or treated as a
+successful archive commit.
 
-## Sequential tape I/O
+One replica never spans tapes. `--copies N` means N committed copies on distinct
+tapes. A failed write retains the stage; successful completion clears it only
+when the required number of copies exists. There is no automatic retry or split.
 
-`verify` and `reindex` use the same full-tape scanner. There is one initial locate
-to BOT, followed by continuous record reads through EOD. A bounded reusable buffer
-pool separates device I/O from parsing/hashing. If the pool approaches full,
-reading waits for substantial free capacity before resuming instead of making
-isolated single-record reads. Reindex commits to SQLite after
-the tape pass, and parser lookahead never physically rewinds the tape.
+## Continuous I/O
 
-SG_IO commands temporarily block asynchronous signals on their OS thread. Linux
-sg can return ERESTARTSYS while a command is already executing; automatic syscall
-restart would submit a tape command twice. Completion is checked without retries,
-and final logical positions must match transferred record counts.
+The reusable pool accepts byte counts from 8 MiB through 64 GiB; the CLI default
+is 1 GiB. This bounds the pool, not total process RSS. Write prefill happens before
+tape writes. If the source falls below the low watermark, a synchronous flush
+with zero filemarks precedes a deliberate refill pause. Unplanned supply stalls
+terminate the unfinished replica. A finite pool cannot fix a sustained source
+rate below the drive's consumption rate.
 
-`--memory` bounds the reusable pool, not total process memory. The gob transport
-also allocates a temporary message for every read response. A 64 GiB pool on a
-94 GiB host caused memory pressure before garbage collection reclaimed those
-messages. Do not infer safe read settings from successful write-pool tests.
-The measured read configuration for that host is:
+Use prior measurements for an unchanged source and I/O path. Measure locally when
+the path, storage layout or workload materially changes. Throughput qualification
+uses external tools; taper has no source-speed test or preparatory benchmarking
+pass. Software zstd is per record and optional; drive compression can change
+consumption rate. Neither compression ratio nor a large pool proves that physical
+backhitches cannot occur.
+
+The writer applies the registered hardware compression preference before writing
+records. It queries the SSC Data Compression mode page, changes DCE only when
+needed, then queries the page again to check the result. A failure stops the write.
+These are drive-setting commands, not tape-record reads or seeks. Decompression,
+the drive's compression algorithm and buffered mode are preserved.
+
+Hardware compression defaults to on and software zstd to off. They can be enabled
+independently; taper does not automatically switch one when the other is selected.
+Data already compressed as 7z, JPEG or video generally gains little from another
+layer. Highly compressible input may need a higher host supply rate to sustain
+tape motion. Native budgets continue to assume no compression gain.
+
+`tape verify` and `tape reindex` share the bounded record pool, decoder and hash
+parser. Verification plans from the catalog before moving the tape. It checks
+cartridge identity, unique archive-to-tape associations, ordered bounds, every
+intervening committed archive and consistent positions. No IDs selects the whole
+tape; one ID selects one archive; two IDs select the inclusive range. Same IDs
+select one archive. Reversed IDs, missing positions, overlaps or unresolved
+writes intersecting the range are rejected.
+
+The English preview displays the tape label, cartridge serial, device and full
+archive IDs with inclusive object ranges. Gray rows show label, gap and EOD
+checks. The JSON plan uses explicit start and exclusive end positions.
+`--dry-run` (`-n`) only queries MAM/device identity and the catalog; it performs
+no record reads, positioning, key changes or catalog sampling writes. It takes
+precedence over `--yes` (`-y`). The default confirmation is `Continue? [y/N]`.
+Non-interactive callers must supply `--yes`; it never bypasses identity or bounds
+checks. The plan and identity are checked again before the first locate.
+
+Verification locates once to the selected BEGIN (BOT for a whole tape), then
+reads forward. Inter-archive gaps must contain filemarks. Its producer enforces
+the scope limit, including read-ahead. A range containing the last committed
+archive reads exactly one additional object and requires EOD there; trailing
+records or an additional filemark fail this check. An unrelated blank-check
+sense is not accepted as EOD. Other ranges stop after the selected durable
+filemark without touching the next archive. There is no automatic retry.
+
+Content, boundary and EOD checks must all pass before verification timestamps and
+observed byte/record counts update in one transaction for the selected replicas.
+Reindex remains a whole-tape recovery scan that can recover later intact archives
+past a damaged one. Catalog writes follow streaming, never per record.
+
+The measured read setting on the qualification host is:
 
 ```sh
-GOMEMLIMIT=10GiB taper verify --device /dev/sg1 --memory 8589934592
+GOMEMLIMIT=10GiB taper tape verify --device /dev/sg1 --memory 8589934592 --yes FIRST_ID LAST_ID
 ```
 
-This uses an 8 GiB pool and a soft Go runtime memory limit. The limit is not a hard
-RSS cap; the observed peak was 10.42 GB (decimal). Choose the read configuration
-before starting the single pass. The same pool and transport are used by reindex.
+The runtime limit is soft. Do not choose a 64 GiB read pool merely because a
+64 GiB write pool worked. See [validation](VALIDATION.md) for evidence and limits.
+
+SG_IO temporarily blocks asynchronous signals on the issuing OS thread to avoid
+ambiguous syscall restarts submitting a command twice. Cancellation can wait for
+the in-flight command to return; an operation is never automatically restarted.
+
+## What verification establishes
+
+Verification checks frame CRCs, record order, sidecar layout, file counts, content
+SHA-256 hashes, BEGIN/COMMIT agreement and the durable filemark. It recomputes the
+archive digest from the decoded paths, sizes and content hashes and compares it
+with the digest stored on tape. `tape verify` also compares that digest and the replica
+layout with SQLite. A range result describes only its selected archives, not
+unread archives elsewhere on the tape.
+
+This is not a fresh comparison against the original source disk and does not
+validate the contents of an encrypted RAR or other nested archive. Source mtimes
+and permissions are not part of the on-tape digest.
+
+Schedule verification to avoid unnecessary rereads. For the operating policy of
+one write and at most one read pass, an interrupted physical scan counts; do not
+follow it with another scan, reindex, or spot reads. Taper does not store or enforce
+a lifetime read-pass quota: that scheduling belongs to the operator. Investigate
+failures with saved logs and local fixtures before deciding what to do next.
+
+## Catalog and key recovery
+
+Only the current catalog schema (version 1) is accepted. `catalog init` creates
+it; opening a catalog does not create missing tables or migrate older versions.
+Import also checks the version before creating a destination. Version mismatches
+are errors. There is no migration command in this release.
+
+`catalog export` creates an authenticated encrypted snapshot containing
+`catalog.db`, `catalog.db.unlock` and `catalog.db.mac`. Keep all three together,
+outside the source disk. Use `catalog import --source EXPORT_DIR --catalog NEW_DB`
+to create a catalog at a new destination. Export uses SQLite's backup API rather
+than copying a live database file and overlooking its journal.
+
+The passphrase wraps a random database key using Argon2id and XChaCha20-Poly1305;
+the SQLite VFS uses Adiantum. `catalog rekey` changes the passphrase envelope.
+It does not change any tape's independent hardware-encryption key.
+
+If the catalog is lost, create a new catalog and run `tape reindex` with the saved tape
+key. That reads the whole tape once and imports complete archives. It can rebuild
+paths, content hashes, packed extents and replicas, but not catalog-only source
+mtimes, selection history or hardware compression preference. Newly reconstructed
+tapes have an unknown compression preference; explicitly register a preference
+before writing. Hardware
+decompression works independently of this preference. There is currently no
+file-extraction command.

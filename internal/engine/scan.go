@@ -47,19 +47,12 @@ type Manifest struct {
 	Logical        int64
 	Files          int
 	Digest         string
-	CachedFiles    int
-	ReadBytes      int64
-	ResumedBytes   int64
 	SourceIdentity SourceIdentity
 }
 type Summary struct {
 	Directory string `json:"directory"`
 	Files     int    `json:"files"`
 	Bytes     int64  `json:"bytes"`
-}
-
-func Scan(ctx context.Context, root, name string, rules policy.Rules) (m Manifest, err error) {
-	return ScanProgress(ctx, root, name, rules, nil)
 }
 
 type scanSink struct {
@@ -80,17 +73,6 @@ func (s scanSink) Write(b []byte) (int, error) {
 	}
 	return n, e
 }
-func ScanProgress(ctx context.Context, root, name string, rules policy.Rules, progress func(int64)) (m Manifest, err error) {
-	return ScanCached(ctx, root, name, rules, progress, nil)
-}
-func ScanCached(ctx context.Context, root, name string, rules policy.Rules, progress func(int64), cache *HashCache) (m Manifest, err error) {
-	inventory, e := InspectFiles(ctx, root, rules)
-	if e != nil {
-		return m, e
-	}
-	return scanInventory(ctx, inventory, name, rules, progress, cache)
-}
-
 func scanInventory(ctx context.Context, inventory Inventory, name string, rules policy.Rules, progress func(int64), cache *HashCache) (m Manifest, err error) {
 	var readBytes int64
 	root := inventory.Root
@@ -147,25 +129,19 @@ func scanInventory(ctx context.Context, inventory Inventory, name string, rules 
 		}
 		n := before.Size()
 		if !hit {
-			n, resumed, re := hashFile(ctx, f, before, h, scanSink{ctx: ctx, w: h, total: &readBytes, notify: progress}, buffer, cache, rel)
-			m.ResumedBytes += resumed
-			if re != nil {
+			n, e = hashFile(ctx, f, before, h, scanSink{ctx: ctx, w: h, total: &readBytes, notify: progress}, buffer, cache, rel)
+			if e != nil {
 				f.Close()
-				return re
+				return e
 			}
 			if n != before.Size() {
 				f.Close()
 				return fmt.Errorf("source size changed during scan: %s", canonical)
 			}
 			hash = hex.EncodeToString(h.Sum(nil))
-		} else {
-			m.CachedFiles++
 		}
 		after, se := f.Stat()
 		f.Close()
-		if e != nil {
-			return e
-		}
 		if se != nil {
 			return se
 		}
@@ -193,9 +169,6 @@ func scanInventory(ctx context.Context, inventory Inventory, name string, rules 
 			return m, err
 		}
 	}
-	if err != nil {
-		return m, err
-	}
 	if err = CheckSource(m); err != nil {
 		return m, err
 	}
@@ -216,24 +189,22 @@ func scanInventory(ctx context.Context, inventory Inventory, name string, rules 
 		m.Logical = c.Data + c.Size
 	}
 	m.Digest = Digest(m.Contents)
-	m.ReadBytes = readBytes
 	return m, nil
 }
 
-func hashFile(ctx context.Context, f *os.File, info os.FileInfo, h hash.Hash, sink scanSink, buffer []byte, cache *HashCache, p string) (total, resumed int64, err error) {
+func hashFile(ctx context.Context, f *os.File, info os.FileInfo, h hash.Hash, sink scanSink, buffer []byte, cache *HashCache, p string) (total int64, err error) {
 	if cache != nil {
-		resumed, err = cache.Resume(p, info, h)
+		total, err = cache.Resume(p, info, h)
 		if err != nil {
 			return
 		}
-		if resumed > 0 {
-			if _, err = f.Seek(resumed, io.SeekStart); err != nil {
+		if total > 0 {
+			if _, err = f.Seek(total, io.SeekStart); err != nil {
 				return
 			}
 		}
 	}
-	total = resumed
-	lastOffset := resumed
+	lastOffset := total
 	lastTime := time.Now()
 	for {
 		if err = ctx.Err(); err != nil {
@@ -254,13 +225,13 @@ func hashFile(ctx context.Context, f *os.File, info os.FileInfo, h hash.Hash, si
 			}
 		}
 		if e == io.EOF {
-			return total, resumed, nil
+			return total, nil
 		}
 		if e != nil {
-			return total, resumed, e
+			return total, e
 		}
 		if n == 0 {
-			return total, resumed, io.ErrNoProgress
+			return total, io.ErrNoProgress
 		}
 	}
 }
@@ -321,7 +292,7 @@ func Save(s *catalog.Store, m Manifest) error {
 		return e
 	}
 	for i, c := range m.Contents {
-		if _, e = tx.Exec("INSERT INTO contents VALUES(?,?,?,?,?,?)", m.ID.String(), i, c.Size, c.Hash, c.Meta, c.Data); e != nil {
+		if _, e = tx.Exec("INSERT INTO contents(batch_id,ordinal,size,hash,meta_offset,data_offset) VALUES(?,?,?,?,?,?)", m.ID.String(), i, c.Size, c.Hash, c.Meta, c.Data); e != nil {
 			return e
 		}
 		for _, f := range c.Files {

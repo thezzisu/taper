@@ -1,0 +1,284 @@
+[
+  {
+    "name": "test_read_format_cab_multi.p1.cab",
+    "password": "",
+    "bytes": 512,
+    "sha256": "6caf38d537984e261527b8caef5f990fb91415a1db917198821a79ed28997973"
+  },
+  {
+    "name": "test_read_format_cab_2.cab",
+    "password": "",
+    "bytes": 33138,
+    "sha256": "06c54de130bd50d86c96c90ab3a80d58824f0657b60fc053df02bbd2b0d3a115"
+  },
+  {
+    "name": "test_read_format_cab_3.cab",
+    "password": "",
+    "bytes": 33138,
+    "sha256": "06c54de130bd50d86c96c90ab3a80d58824f0657b60fc053df02bbd2b0d3a115"
+  },
+  {
+    "name": "test_read_format_zip_encryption_data.zip",
+    "password": "12345678",
+    "bytes": 40,
+    "sha256": "1b9d325b4f81a4c277c186d63108264bf9a5770870790a306dbec55653424839"
+  },
+  {
+    "name": "test_read_format_zip_winzip_aes128.zip",
+    "password": "password",
+    "bytes": 6818,
+    "sha256": "3c4bccfd3465ff9c3a37da7523a7ae092b7259980f78d3e226531cc19e2034d9"
+  },
+  {
+    "name": "test_read_format_zip_winzip_aes256.zip",
+    "password": "password",
+    "bytes": 6818,
+    "sha256": "3c4bccfd3465ff9c3a37da7523a7ae092b7259980f78d3e226531cc19e2034d9"
+  },
+  {
+    "name": "test_read_format_rar4_encrypted_filenames.rar",
+    "password": "password",
+    "bytes": 72,
+    "sha256": "037508178c64518b6f813dc610e5f8151bbf93b95a209f4532bc3b8241b9317b"
+  },
+  {
+    "name": "test_read_format_rar4_solid_encrypted.rar",
+    "password": "password",
+    "bytes": 72,
+    "sha256": "037508178c64518b6f813dc610e5f8151bbf93b95a209f4532bc3b8241b9317b"
+  },
+  {
+    "name": "test_read_format_lha_lh7.lzh",
+    "password": "",
+    "bytes": 138,
+    "sha256": "6d7e4848dd49a85c03214c3642513f8faf9aafc350772627762555df79016b43"
+  },
+  {
+    "name": "test_read_format_7zip_bcj2_bzip2.7z",
+    "password": "",
+    "bytes": 27328,
+    "sha256": "9f24006793ce80bfb91dd66d8f65a3241cfc2c24155ec9073856cd450ae46088"
+  },
+  {
+    "name": "test_read_format_7zip_bcj2_copy_1.7z",
+    "password": "",
+    "bytes": 27328,
+    "sha256": "9f24006793ce80bfb91dd66d8f65a3241cfc2c24155ec9073856cd450ae46088"
+  },
+  {
+    "name": "test_read_format_7zip_bcj2_copy_2.7z",
+    "password": "",
+    "bytes": 27328,
+    "sha256": "9f24006793ce80bfb91dd66d8f65a3241cfc2c24155ec9073856cd450ae46088"
+  },
+  {
+    "name": "test_read_format_7zip_bcj2_copy_lzma.7z",
+    "password": "",
+    "bytes": 27328,
+    "sha256": "9f24006793ce80bfb91dd66d8f65a3241cfc2c24155ec9073856cd450ae46088"
+  },
+  {
+    "name": "test_read_format_7zip_bcj2_deflate.7z",
+    "password": "",
+    "bytes": 27328,
+    "sha256": "9f24006793ce80bfb91dd66d8f65a3241cfc2c24155ec9073856cd450ae46088"
+  },
+  {
+    "name": "test_read_format_7zip_bcj2_lzma1_1.7z",
+    "password": "",
+    "bytes": 27328,
+    "sha256": "9f24006793ce80bfb91dd66d8f65a3241cfc2c24155ec9073856cd450ae46088"
+  },
+  {
+    "name": "test_read_format_7zip_bcj2_lzma1_2.7z",
+    "password": "",
+    "bytes": 27328,
+    "sha256": "9f24006793ce80bfb91dd66d8f65a3241cfc2c24155ec9073856cd450ae46088"
+  },
+  {
+    "name": "test_read_format_7zip_bcj2_lzma2_1.7z",
+    "password": "",
+    "bytes": 27328,
+    "sha256": "9f24006793ce80bfb91dd66d8f65a3241cfc2c24155ec9073856cd450ae46088"
+  },
+  {
+    "name": "test_read_format_7zip_bcj2_lzma2_2.7z",
+    "password": "",
+    "bytes": 27328,
+    "sha256": "9f24006793ce80bfb91dd66d8f65a3241cfc2c24155ec9073856cd450ae46088"
+  },
+  {
+    "name": "test_read_format_7zip_bcj_bzip2.7z",
+    "password": "",
+    "bytes": 27328,
+    "sha256": "9f24006793ce80bfb91dd66d8f65a3241cfc2c24155ec9073856cd450ae46088"
+  },
+  {
+    "name": "test_read_format_7zip_bcj_copy.7z",
+    "password": "",
+    "bytes": 27328,
+    "sha256": "9f24006793ce80bfb91dd66d8f65a3241cfc2c24155ec9073856cd450ae46088"
+  },
+  {
+    "name": "test_read_format_7zip_bcj_deflate.7z",
+    "password": "",
+    "bytes": 27328,
+    "sha256": "9f24006793ce80bfb91dd66d8f65a3241cfc2c24155ec9073856cd450ae46088"
+  },
+  {
+    "name": "test_read_format_7zip_bcj_lzma1.7z",
+    "password": "",
+    "bytes": 27328,
+    "sha256": "9f24006793ce80bfb91dd66d8f65a3241cfc2c24155ec9073856cd450ae46088"
+  },
+  {
+    "name": "test_read_format_7zip_bcj_lzma2.7z",
+    "password": "",
+    "bytes": 27328,
+    "sha256": "9f24006793ce80bfb91dd66d8f65a3241cfc2c24155ec9073856cd450ae46088"
+  },
+  {
+    "name": "test_read_format_7zip_delta4_lzma1.7z",
+    "password": "",
+    "bytes": 27627,
+    "sha256": "b4a742f0d31c3898596ceba5436792e33945dda76395908266640c4fb5aca5eb"
+  },
+  {
+    "name": "test_read_format_7zip_delta4_lzma2.7z",
+    "password": "",
+    "bytes": 27627,
+    "sha256": "b4a742f0d31c3898596ceba5436792e33945dda76395908266640c4fb5aca5eb"
+  },
+  {
+    "name": "test_read_format_7zip_delta_lzma1.7z",
+    "password": "",
+    "bytes": 27627,
+    "sha256": "b4a742f0d31c3898596ceba5436792e33945dda76395908266640c4fb5aca5eb"
+  },
+  {
+    "name": "test_read_format_7zip_delta_lzma2.7z",
+    "password": "",
+    "bytes": 27627,
+    "sha256": "b4a742f0d31c3898596ceba5436792e33945dda76395908266640c4fb5aca5eb"
+  },
+  {
+    "name": "test_read_format_zip_bzip2_multi.zipx",
+    "password": "",
+    "bytes": 8463,
+    "sha256": "d38b8708b412843543951aafa9711d625de172943ea1277d4dd832bb46f05afd"
+  },
+  {
+    "name": "test_read_format_zip_lzma_multi.zipx",
+    "password": "",
+    "bytes": 8463,
+    "sha256": "d38b8708b412843543951aafa9711d625de172943ea1277d4dd832bb46f05afd"
+  },
+  {
+    "name": "test_read_format_zip_ppmd8_multi.zipx",
+    "password": "",
+    "bytes": 8463,
+    "sha256": "d38b8708b412843543951aafa9711d625de172943ea1277d4dd832bb46f05afd"
+  },
+  {
+    "name": "test_read_format_zip_xz_multi.zipx",
+    "password": "",
+    "bytes": 11412,
+    "sha256": "681e47eb8920da6e4dd63a7821c90b2da04c4f08cdda8106066aef85228ea650"
+  },
+  {
+    "name": "test_read_format_zip_zstd_multi.zipx",
+    "password": "",
+    "bytes": 8463,
+    "sha256": "d38b8708b412843543951aafa9711d625de172943ea1277d4dd832bb46f05afd"
+  },
+  {
+    "name": "aes128.zip",
+    "password": "test-password",
+    "bytes": 14,
+    "sha256": "ea0463d12bc36581369e010a3546c36c2b2c70e79b77b3acf15fdd9c13cf3bfb"
+  },
+  {
+    "name": "aes192.zip",
+    "password": "test-password",
+    "bytes": 14,
+    "sha256": "ea0463d12bc36581369e010a3546c36c2b2c70e79b77b3acf15fdd9c13cf3bfb"
+  },
+  {
+    "name": "aes256.zip",
+    "password": "test-password",
+    "bytes": 14,
+    "sha256": "ea0463d12bc36581369e010a3546c36c2b2c70e79b77b3acf15fdd9c13cf3bfb"
+  },
+  {
+    "name": "plain.bzip2",
+    "password": "",
+    "bytes": 14,
+    "sha256": "ea0463d12bc36581369e010a3546c36c2b2c70e79b77b3acf15fdd9c13cf3bfb"
+  },
+  {
+    "name": "plain.gzip",
+    "password": "",
+    "bytes": 14,
+    "sha256": "ea0463d12bc36581369e010a3546c36c2b2c70e79b77b3acf15fdd9c13cf3bfb"
+  },
+  {
+    "name": "plain.tar",
+    "password": "",
+    "bytes": 14,
+    "sha256": "ea0463d12bc36581369e010a3546c36c2b2c70e79b77b3acf15fdd9c13cf3bfb"
+  },
+  {
+    "name": "plain.wim",
+    "password": "",
+    "bytes": 14,
+    "sha256": "ea0463d12bc36581369e010a3546c36c2b2c70e79b77b3acf15fdd9c13cf3bfb"
+  },
+  {
+    "name": "plain.xz",
+    "password": "",
+    "bytes": 14,
+    "sha256": "ea0463d12bc36581369e010a3546c36c2b2c70e79b77b3acf15fdd9c13cf3bfb"
+  },
+  {
+    "name": "split.zip",
+    "password": "",
+    "bytes": 200000,
+    "sha256": "a0d910cc480eceb33debc5cb13b31896ddfcb886ca54831a62942226a49bb05f"
+  },
+  {
+    "name": "zipcrypto.zip",
+    "password": "test-password",
+    "bytes": 14,
+    "sha256": "ea0463d12bc36581369e010a3546c36c2b2c70e79b77b3acf15fdd9c13cf3bfb"
+  },
+  {
+    "name": "image.swm",
+    "password": "",
+    "bytes": 210000,
+    "sha256": "2efdceb659ac51f1a83b645da955670efc46f8c964563002a0a795890d8e1d00"
+  },
+  {
+    "name": "rar3-old.rar",
+    "password": "",
+    "bytes": 207050,
+    "sha256": "794be395a772eaf0bba710276d74043e725992519e0a8a7ccf22d83a697c2c3f"
+  },
+  {
+    "name": "rar5-vols.part1.rar",
+    "password": "",
+    "bytes": 207050,
+    "sha256": "794be395a772eaf0bba710276d74043e725992519e0a8a7ccf22d83a697c2c3f"
+  },
+  {
+    "name": "rar202-comment-psw.rar",
+    "password": "password",
+    "bytes": 14,
+    "sha256": "635124549e92d8f186d7aff7c42180a47384866a511c25a4acf62e5e8daf5b35"
+  },
+  {
+    "name": "rar3-comment-hpsw.rar",
+    "password": "password",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+]
