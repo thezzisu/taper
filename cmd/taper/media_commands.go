@@ -21,7 +21,7 @@ func confirm(c *cobra.Command, o *settings) error {
 	}
 	return ui.Confirm(c.InOrStdin(), c.ErrOrStderr(), ui.IsTerminal(c.InOrStdin()))
 }
-func scope(c *cobra.Command, o *settings, m *engine.MediaMember, replica string, batches []engine.BatchMeta) error {
+func scope(c *cobra.Command, o *settings, m *engine.MediaMember, replica, action string, batches []engine.BatchMeta) error {
 	w := c.ErrOrStderr()
 	if o.dryRun {
 		w = c.OutOrStdout()
@@ -31,6 +31,7 @@ func scope(c *cobra.Command, o *settings, m *engine.MediaMember, replica string,
 			return e
 		}
 	}
+	fmt.Fprintf(w, "Action     : %s\n", ui.Safe(action))
 	fmt.Fprintf(w, "Replica    : %s\n", ui.Safe(replica))
 	if o.image != "" {
 		fmt.Fprintf(w, "Image      : %s\n", ui.Safe(o.image))
@@ -93,9 +94,9 @@ func executeMedia(ctx context.Context, command string, paths []string, o *settin
 			if o.json {
 				return output(p)
 			}
-			return scope(c, o, &p.MediaMember, p.Replica, nil)
+			return scope(c, o, &p.MediaMember, p.Replica, "Remove cartridge", nil)
 		}
-		if e = scope(c, o, &p.MediaMember, p.Replica, nil); e != nil {
+		if e = scope(c, o, &p.MediaMember, p.Replica, "Remove cartridge", nil); e != nil {
 			return e
 		}
 		if p.Last {
@@ -150,14 +151,14 @@ func executeMedia(ctx context.Context, command string, paths []string, o *settin
 		}
 		p := map[string]any{"replica_id": l.ID, "label": l.Name, "serial": l.Serial, "scope": "BOT through EOD"}
 		if o.dryRun {
-		if o.json {
-			return output(p)
-		}
-		if e = ui.TapeHeader(c.OutOrStdout(), l.Name, l.Serial, o.device); e != nil {
-			return e
-		}
-		fmt.Fprintln(c.OutOrStdout(), "Scope      : Entire tape, BOT through EOD")
-		return nil
+			if o.json {
+				return output(p)
+			}
+			if e = ui.TapeHeader(c.OutOrStdout(), l.Name, l.Serial, o.device); e != nil {
+				return e
+			}
+			fmt.Fprintln(c.OutOrStdout(), "Scope      : Entire tape, BOT through EOD")
+			return nil
 		}
 		if e = ui.TapeHeader(c.ErrOrStderr(), l.Name, l.Serial, o.device); e != nil {
 			return e
@@ -214,9 +215,9 @@ func executeMedia(ctx context.Context, command string, paths []string, o *settin
 			if o.json {
 				return output(map[string]any{"replica": r, "tape": member, "image": o.image, "archives": []engine.BatchMeta{engine.Meta(m)}})
 			}
-			return scope(c, o, member, r.Name, []engine.BatchMeta{engine.Meta(m)})
+			return scope(c, o, member, r.Name, "Write archive", []engine.BatchMeta{engine.Meta(m)})
 		}
-		if e = scope(c, o, member, r.Name, []engine.BatchMeta{engine.Meta(m)}); e != nil {
+		if e = scope(c, o, member, r.Name, "Write archive", []engine.BatchMeta{engine.Meta(m)}); e != nil {
 			return e
 		}
 		if d != nil {
@@ -274,6 +275,11 @@ func executeSync(ctx context.Context, o *settings, c *cobra.Command, s *catalog.
 	if from {
 		file = o.from
 	}
+	// The sync image is a positional source/destination rather than the generic
+	// --image flag; expose it in the same human scope header.
+	previousImage := o.image
+	o.image = file
+	defer func() { o.image = previousImage }()
 	var img *media.Image
 	// A new destination is created only after confirmation. Existing sources are
 	// never auto-created, including dry-run and image-to-tape sync.
@@ -291,9 +297,13 @@ func executeSync(ctx context.Context, o *settings, c *cobra.Command, s *catalog.
 		return e
 	}
 	if o.dryRun && o.json {
-		return renderResult(c.OutOrStdout(), "tape sync", o.device, p, true)
+		return renderResult(c.OutOrStdout(), "tape sync", o.device, map[string]any{"plan": p, "image": file}, true)
 	}
-	if e = scope(c, o, &member, r.Name, p.Archives); e != nil {
+	action := "Capture tape to image"
+	if from {
+		action = "Sync image to tape"
+	}
+	if e = scope(c, o, &member, r.Name, action, p.Archives); e != nil {
 		return e
 	}
 	if o.dryRun {
@@ -372,9 +382,9 @@ func executeMount(ctx context.Context, o *settings, c *cobra.Command, s *catalog
 		if o.json {
 			return renderResult(c.OutOrStdout(), "replica mount", o.device, map[string]any{"replica": r, "tape": member, "archives": selected, "image": o.image, "mountpoint": mountpoint}, true)
 		}
-		return scope(c, o, member, r.Name, selected)
+		return scope(c, o, member, r.Name, "Mount archive tree", selected)
 	}
-	if e = scope(c, o, member, r.Name, selected); e != nil {
+	if e = scope(c, o, member, r.Name, "Mount archive tree", selected); e != nil {
 		return e
 	}
 	if d != nil {

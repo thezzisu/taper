@@ -10,7 +10,7 @@ Help and shell completion never open a catalog or a drive.
 | `replica add [NAME] --device DEVICE` | Bind a cartridge using non-moving MAM queries |
 | `replica rm [NAME] (--device DEVICE \| --tape IDENTIFIER)` | Forget a member and its physical replica records |
 | `replica mount [NAME] MOUNTPOINT` | Mount original archived files read-only |
-| `tape ls` | Show saved cartridge identity, notes, capacity and health |
+| `tape ls` | Show saved cartridge identity, replica set, notes, capacity and health |
 | `tape probe --device DEVICE` | Query current drive/MAM facts without moving tape |
 | `tape verify --device DEVICE [--archive FIRST[-LAST]]` | Verify the whole tape or one contiguous interval |
 | `tape reindex --device DEVICE` | Rebuild catalog records in one BOT-to-EOD pass |
@@ -40,8 +40,9 @@ Catalog-backed commands take `--catalog PATH` and `--pass-file FILE`; otherwise
 the default catalog is `$XDG_DATA_HOME/taper/catalog.db` (or
 `~/.local/share/taper/catalog.db`) and an existing secure `session.pass` is used
 automatically. `TAPER_CATALOG` and `TAPER_PASS_FILE` override those defaults;
-explicit flags take precedence. Passphrase files must be mode 0600 and failures
-are reported. Device paths are Linux SG nodes or persistent symlinks.
+explicit flags take precedence. Passphrase, replica-key and archive-password
+files must be mode 0600 and failures are reported. Device paths are Linux SG
+nodes or persistent symlinks.
 `tape probe`, `tape eject` and `key generate` need no catalog.
 
 - `replica create`: `--key-file`, `--no-save-key`, `--hardware-compression` (true).

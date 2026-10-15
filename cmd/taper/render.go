@@ -98,7 +98,11 @@ func renderResult(w io.Writer, command, device string, value any, machine bool) 
 		}
 		return field("Note", v.Note)
 	case engine.SyncResult:
-		return field("Synchronized", fmt.Sprintf("%d archives, %d objects, %d encoded bytes; pruned through %d", len(v.Archives), v.Objects, v.Bytes, v.PrunedEnd))
+		message := fmt.Sprintf("%d archives, %d objects, %d encoded bytes", len(v.Archives), v.Objects, v.Bytes)
+		if v.PrunedEnd > 0 {
+			message += fmt.Sprintf("; image pruned through object %d", v.PrunedEnd-1)
+		}
+		return field("Synchronized", message)
 	case []map[string]any:
 		rows := make([]ui.Row, 0, len(v))
 		for _, tape := range v {
@@ -106,9 +110,9 @@ func renderResult(w io.Writer, command, device string, value any, machine bool) 
 			if tape["write_budget_bytes"] != nil {
 				budget = fmt.Sprint(tape["write_budget_bytes"])
 			}
-			rows = append(rows, ui.Row{Cells: []string{ui.TapeStrip(tape["label"].(string), color), ui.Safe(tape["serial"].(string)), budget, ui.Safe(tape["state"].(string)), ui.Safe(tape["sampled"].(string)), ui.Safe(fmt.Sprint(tape["note"]))}})
+			rows = append(rows, ui.Row{Cells: []string{ui.TapeStrip(tape["label"].(string), color), ui.Safe(fmt.Sprint(tape["replica"])), ui.Safe(tape["serial"].(string)), budget, ui.Safe(tape["state"].(string)), ui.Safe(tape["sampled"].(string)), ui.Safe(fmt.Sprint(tape["note"]))}})
 		}
-		return ui.Table(w, []string{"LABEL", "SERIAL", "WRITE BUDGET (B)", "STATE", "SAMPLED", "NOTE"}, rows)
+		return ui.Table(w, []string{"LABEL", "REPLICA", "SERIAL", "WRITE BUDGET (B)", "STATE", "SAMPLED", "NOTE"}, rows)
 	case []archiveResult:
 		rows := make([]ui.Row, 0, len(v))
 		for _, a := range v {
@@ -131,7 +135,7 @@ func renderResult(w io.Writer, command, device string, value any, machine bool) 
 		return field("Archive index", fmt.Sprintf("%d containers, %d members, %d locked, %d issues", v.Containers, v.Members, len(v.Locked), len(v.Issues)))
 	case map[string]any:
 		if command == "stage plan" {
-			for _, k := range []string{"plan", "files", "stream_bytes", "encoded_bytes", "data_records"} {
+			for _, k := range []string{"plan", "files", "stream_bytes", "budget_bytes", "data_records"} {
 				if err := field(strings.ReplaceAll(k, "_", " "), v[k]); err != nil {
 					return err
 				}
@@ -139,15 +143,29 @@ func renderResult(w io.Writer, command, device string, value any, machine bool) 
 			if err := renderResult(w, command, device, v["index"], false); err != nil {
 				return err
 			}
+			if status, ok := v["status"].(engine.Status); ok {
+				if err := field("replica status", fmt.Sprintf("%d members, %d committed, %d verified, covered=%t; historical duplicates %d (%d bytes)", status.Members, status.Committed, status.Verified, status.Covered, status.HistoricalDuplicates, status.HistoricalDuplicateBytes)); err != nil {
+					return err
+				}
+			}
+			if directories, ok := v["directories"].([]engine.Summary); ok {
+				rows := make([]ui.Row, 0, len(directories))
+				for _, directory := range directories {
+					rows = append(rows, ui.Row{Cells: []string{ui.Safe(directory.Directory), strconv.Itoa(directory.Files), strconv.FormatInt(directory.Bytes, 10)}})
+				}
+				if err := ui.Table(w, []string{"TOP DIRECTORY", "FILES", "BYTES"}, rows); err != nil {
+					return err
+				}
+			}
 			rows := []ui.Row{}
 			for _, r := range v["recommendations"].([]engine.Recommendation) {
-				label, budget := ui.TapeStrip(r.Label, color), strconv.FormatInt(r.Remaining, 10)
+				label, budget := ui.Safe(r.Name), strconv.FormatInt(r.Remaining, 10)
 				if r.ID == "" {
-					label, budget = "<New tape>", "-"
+					label, budget = "<New replica set>", "-"
 				}
 				rows = append(rows, ui.Row{Cells: []string{label, budget, ui.Safe(r.Reason)}})
 			}
-			return ui.Table(w, []string{"TAPE", "WRITE BUDGET (B)", "RECOMMENDATION"}, rows)
+			return ui.Table(w, []string{"REPLICA SET", "WRITE BUDGET (B)", "RECOMMENDATION"}, rows)
 		}
 		keys := make([]string, 0, len(v))
 		for k := range v {

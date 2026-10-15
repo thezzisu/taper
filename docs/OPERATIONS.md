@@ -67,11 +67,13 @@ The budget is a conservative admission rule, not a promise of the exact physical
 end-of-tape location. A committed write invalidates its pre-write capacity sample
 in the same catalog transaction; only a saved post-write sample restores it.
 
-`stage plan` reports exact `encoded_bytes` and `data_records` for the uncompressed
-archive stream, including its BEGIN and COMMIT records. Filemarks are logical
-objects, not invented byte costs. Hardware framing/ECC costs are reflected in
-device capacity consumption; the reserve remains explicit. Software zstd can
-reduce encoded size and never increases a record's stored length.
+`stage plan` reports a conservative `budget_bytes` upper bound and `data_records`
+for the uncompressed archive stream, including its BEGIN and COMMIT records. The
+actual encoded byte count is recorded only after an image or physical write
+completes. Filemarks are logical objects, not invented byte costs. Hardware
+framing/ECC costs are reflected in device capacity consumption; the reserve
+remains explicit. Software zstd can reduce encoded size and never increases a
+record's stored length.
 
 Each replica records confirmed host-to-drive bytes and records, DATA block count,
 and observed logical end position. Counters are accumulated in memory and saved

@@ -7,7 +7,7 @@ import (
 
 type Recommendation struct {
 	ID        string `json:"id"`
-	Label     string `json:"label"`
+	Name      string `json:"name"`
 	Serial    string `json:"serial,omitempty"`
 	Barcode   string `json:"barcode,omitempty"`
 	Remaining int64  `json:"write_budget_bytes"`
@@ -27,5 +27,5 @@ func Recommend(s *catalog.Store, m Manifest) ([]Recommendation, error) {
 	if budget < Budget(m) {
 		reason = "replica set cannot fit this batch; bind adequate media or choose another set"
 	}
-	return []Recommendation{{ID: r.ID, Label: r.Name, Remaining: budget, Reason: fmt.Sprintf("%s (%d members)", reason, r.Members)}}, nil
+	return []Recommendation{{ID: r.ID, Name: r.Name, Remaining: budget, Reason: fmt.Sprintf("%s (%d members)", reason, r.Members)}}, nil
 }

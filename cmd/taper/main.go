@@ -33,14 +33,7 @@ func main() {
 }
 func password(file string) ([]byte, error) {
 	if file != "" {
-		st, e := os.Stat(file)
-		if e != nil {
-			return nil, e
-		}
-		if st.Mode().Perm()&0077 != 0 {
-			return nil, fmt.Errorf("passphrase file %s must be owner-only (mode 0600; current mode %04o)", file, st.Mode().Perm())
-		}
-		b, e := os.ReadFile(file)
+		b, e := secretFile(file, "passphrase")
 		return []byte(strings.TrimRight(string(b), "\r\n")), e
 	}
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
@@ -51,11 +44,23 @@ func password(file string) ([]byte, error) {
 	fmt.Fprintln(os.Stderr)
 	return b, e
 }
+
+func secretFile(file, kind string) ([]byte, error) {
+	st, err := os.Stat(file)
+	if err != nil {
+		return nil, err
+	}
+	if st.Mode().Perm()&0077 != 0 {
+		return nil, fmt.Errorf("%s file %s must be owner-only (mode 0600; current mode %04o)", kind, file, st.Mode().Perm())
+	}
+	return os.ReadFile(file)
+}
+
 func keyFile(file string) ([]byte, error) {
 	if file == "" {
 		return nil, nil
 	}
-	b, e := os.ReadFile(file)
+	b, e := secretFile(file, "key")
 	if e != nil {
 		return nil, e
 	}
@@ -147,7 +152,18 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 			return e
 		}
 		if o.dryRun {
-			return output(i)
+			if o.json {
+				return output(map[string]any{"action": "eject", "tape": i})
+			}
+			label := i.Barcode
+			if label == "" {
+				label = i.Serial
+			}
+			if e = ui.TapeHeader(c.OutOrStdout(), label, i.Serial, *sg); e != nil {
+				return e
+			}
+			fmt.Fprintln(c.OutOrStdout(), "Action     : Rewind and unload cartridge")
+			return nil
 		}
 		label := i.Barcode
 		if label == "" {
@@ -216,19 +232,19 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 		return output(map[string]string{"catalog": db, "status": "passphrase changed"})
 	}
 	if command == "tape ls" {
-		rows, e := s.DB.Query("SELECT id,label,note,serial,total,remaining,sampled,state,key_id,hardware_compression,COALESCE((SELECT info FROM media_health WHERE media_id=media.id),'{}'),(SELECT COUNT(*) FROM replicas WHERE media_id=media.id AND state IN ('writing','failed')),COALESCE((SELECT unhealthy FROM media_health WHERE media_id=media.id),0) FROM media ORDER BY label")
+		rows, e := s.DB.Query("SELECT media.id,media.label,media.note,media.serial,media.total,media.remaining,media.sampled,media.state,media.key_id,media.hardware_compression,media.replica_id,replica_sets.name,COALESCE((SELECT info FROM media_health WHERE media_id=media.id),'{}'),(SELECT COUNT(*) FROM replicas WHERE media_id=media.id AND state IN ('writing','failed')),COALESCE((SELECT unhealthy FROM media_health WHERE media_id=media.id),0) FROM media JOIN replica_sets ON replica_sets.id=media.replica_id ORDER BY media.label")
 		if e != nil {
 			return e
 		}
 		defer rows.Close()
 		out := []map[string]any{}
 		for rows.Next() {
-			var id, l, note, serial, sampled, state, k, savedInfo string
+			var id, l, note, serial, sampled, state, k, replicaID, replicaName, savedInfo string
 			var total, remaining int64
 			var incomplete int
 			var compression *bool
 			var unhealthy bool
-			if e = rows.Scan(&id, &l, &note, &serial, &total, &remaining, &sampled, &state, &k, &compression, &savedInfo, &incomplete, &unhealthy); e != nil {
+			if e = rows.Scan(&id, &l, &note, &serial, &total, &remaining, &sampled, &state, &k, &compression, &replicaID, &replicaName, &savedInfo, &incomplete, &unhealthy); e != nil {
 				return e
 			}
 			var info media.Info
@@ -240,7 +256,7 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 			if limit, available, err := info.Budget(); err == nil && incomplete == 0 && !unhealthy && compression != nil && (state == "open" || state == "registered") {
 				budget = max(0, available-engine.Reserve(limit))
 			}
-			out = append(out, map[string]any{"id": id, "label": l, "note": note, "serial": serial, "reported_total_bytes": total, "reported_remaining_bytes": remaining, "native_limit_bytes": info.NativeLimit, "write_budget_bytes": budget, "logical_position": info.Position, "sampled": sampled, "state": state, "key_id": k, "hardware_compression": compression, "early_warning": info.EarlyWarning, "incomplete_writes": incomplete, "unhealthy": unhealthy, "tape_alerts": info.Alerts})
+			out = append(out, map[string]any{"id": id, "replica_id": replicaID, "replica": replicaName, "label": l, "note": note, "serial": serial, "reported_total_bytes": total, "reported_remaining_bytes": remaining, "native_limit_bytes": info.NativeLimit, "write_budget_bytes": budget, "logical_position": info.Position, "sampled": sampled, "state": state, "key_id": k, "hardware_compression": compression, "early_warning": info.EarlyWarning, "incomplete_writes": incomplete, "unhealthy": unhealthy, "tape_alerts": info.Alerts})
 		}
 		if e = rows.Err(); e != nil {
 			return e
@@ -329,7 +345,7 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 		if e != nil {
 			return e
 		}
-		return output(map[string]any{"plan": m.ID.String(), "files": m.Files, "stream_bytes": m.Logical, "encoded_bytes": engine.Budget(m), "data_records": 1 + (m.Logical-1)/format.PayloadSize, "recommendations": recommendations, "status": status, "directories": m.Summaries(), "index": index})
+		return output(map[string]any{"plan": m.ID.String(), "files": m.Files, "stream_bytes": m.Logical, "budget_bytes": engine.Budget(m), "data_records": 1 + (m.Logical-1)/format.PayloadSize, "recommendations": recommendations, "status": status, "directories": m.Summaries(), "index": index})
 	case "stage unlock":
 		if len(paths) != 1 {
 			return errors.New("provide one staged container path; inner containers use outer.7z!/inner.zip")
@@ -349,7 +365,7 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 		}
 		var archivePass []byte
 		if *archivePasswordFile != "" {
-			archivePass, e = os.ReadFile(*archivePasswordFile)
+			archivePass, e = secretFile(*archivePasswordFile, "archive password")
 			archivePass = []byte(strings.TrimRight(string(archivePass), "\r\n"))
 		} else {
 			archivePass, e = prompt(target)
@@ -395,6 +411,9 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 				return e
 			}
 			return ui.Browse(m, reps, index, c.InOrStdin(), c.OutOrStdout())
+		}
+		if !o.json {
+			fmt.Fprintf(c.OutOrStdout(), "Archive: %s (%s)\n", ui.Safe(m.Name), m.ID.String())
 		}
 		out := []browseResult{}
 		for _, c := range m.Contents {
