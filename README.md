@@ -61,7 +61,11 @@ writes. Taper checks source identity, metadata and streaming hashes; it does not
 freeze files or create filesystem snapshots.
 
 A hidden prompt unlocks the catalog. `--pass-file` reads a local passphrase file
-for unattended use. The default catalog is `~/.local/share/taper/catalog.db`.
+for unattended use. The default catalog is `~/.local/share/taper/catalog.db`;
+`TAPER_CATALOG` overrides it. `TAPER_PASS_FILE` supplies the passphrase file
+through the environment, otherwise an existing `~/.local/share/taper/session.pass`
+is used. Passphrase files must be owner-only (mode 0600), and an unsafe file
+produces an explicit error.
 Keep credentials and catalog exports outside the source tree. Flags may precede
 or follow positional paths; `--memory` takes an integer byte count. Output is
 human-readable by default. Use `--json` for automation; results go to stdout and

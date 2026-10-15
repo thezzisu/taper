@@ -23,6 +23,70 @@ func (d *cliTape) ReadRecordInto(b []byte) (int, error) { d.reads++; return d.De
 func (d *cliTape) Locate(p uint64) error                { d.locates++; return d.Device.Locate(p) }
 func (d *cliTape) SetKey(k []byte) error                { d.keys++; return d.Device.SetKey(k) }
 
+func TestCatalogEnvironmentAndSecureDefaults(t *testing.T) {
+	dir := t.TempDir()
+	data := filepath.Join(dir, "data")
+	taperDir := filepath.Join(data, "taper")
+	if err := os.MkdirAll(taperDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	passPath := filepath.Join(taperDir, "session.pass")
+	if err := os.WriteFile(passPath, []byte("environment pass"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(taperDir, "catalog.db")
+	s, err := catalog.Create(dbPath, []byte("environment pass"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("secure XDG defaults", func(t *testing.T) {
+		t.Setenv("XDG_DATA_HOME", data)
+		t.Setenv("TAPER_CATALOG", "")
+		t.Setenv("TAPER_PASS_FILE", "")
+		c := newCommand()
+		var out bytes.Buffer
+		c.SetOut(&out)
+		c.SetErr(&out)
+		c.SetArgs([]string{"replica", "ls"})
+		if err := c.Execute(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("environment overrides", func(t *testing.T) {
+		t.Setenv("TAPER_CATALOG", dbPath)
+		t.Setenv("TAPER_PASS_FILE", passPath)
+		c := newCommand()
+		var out bytes.Buffer
+		c.SetOut(&out)
+		c.SetErr(&out)
+		c.SetArgs([]string{"replica", "ls"})
+		if err := c.Execute(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("unsafe passfile is explicit", func(t *testing.T) {
+		unsafePass := filepath.Join(t.TempDir(), "pass")
+		if err := os.WriteFile(unsafePass, []byte("environment pass"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TAPER_CATALOG", dbPath)
+		t.Setenv("TAPER_PASS_FILE", unsafePass)
+		c := newCommand()
+		c.SetOut(&bytes.Buffer{})
+		c.SetErr(&bytes.Buffer{})
+		c.SetArgs([]string{"replica", "ls"})
+		if err := c.Execute(); err == nil || !strings.Contains(err.Error(), "owner-only") {
+			t.Fatalf("unsafe passfile was not rejected: %v", err)
+		}
+	})
+}
+
 func TestCLIOfflineWorkflow(t *testing.T) {
 	original := openTape
 	var last *cliTape

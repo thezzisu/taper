@@ -2,10 +2,11 @@ package main
 
 import (
 	"context"
-	"github.com/spf13/cobra"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 type settings struct {
@@ -23,6 +24,38 @@ func run(ctx context.Context, args []string) error {
 	c.SetArgs(args)
 	return c.ExecuteContext(ctx)
 }
+
+// dataHome follows the XDG data directory convention while preserving taper's
+// existing ~/.local/share/taper location when XDG_DATA_HOME is unset.
+func dataHome() string {
+	if v := os.Getenv("XDG_DATA_HOME"); filepath.IsAbs(v) {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "."
+	}
+	return filepath.Join(home, ".local", "share")
+}
+
+func defaultCatalogPath() string {
+	if v := os.Getenv("TAPER_CATALOG"); v != "" {
+		return v
+	}
+	return filepath.Join(dataHome(), "taper", "catalog.db")
+}
+
+func defaultPassFile() string {
+	if v := os.Getenv("TAPER_PASS_FILE"); v != "" {
+		return v
+	}
+	path := filepath.Join(dataHome(), "taper", "session.pass")
+	if _, err := os.Stat(path); err == nil || !os.IsNotExist(err) {
+		return path
+	}
+	return ""
+}
+
 func newCommand() *cobra.Command {
 	o := &settings{}
 	root := &cobra.Command{Use: "taper", Short: "Replica sets, sparse images and packed tape archives", SilenceUsage: true, SilenceErrors: true}
@@ -38,9 +71,8 @@ func newCommand() *cobra.Command {
 			return execute(c.Context(), parent.Name()+" "+c.Name(), paths, o, c)
 		}
 		if db {
-			home, _ := os.UserHomeDir()
-			c.Flags().StringVar(&o.catalog, "catalog", filepath.Join(home, ".local/share/taper/catalog.db"), "encrypted catalog path")
-			c.Flags().StringVar(&o.passFile, "pass-file", "", "private catalog passphrase file")
+			c.Flags().StringVar(&o.catalog, "catalog", defaultCatalogPath(), "encrypted catalog path (TAPER_CATALOG overrides the default)")
+			c.Flags().StringVar(&o.passFile, "pass-file", defaultPassFile(), "private catalog passphrase file (TAPER_PASS_FILE or secure default)")
 		}
 		parent.AddCommand(c)
 		return c

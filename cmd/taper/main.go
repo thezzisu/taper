@@ -33,6 +33,13 @@ func main() {
 }
 func password(file string) ([]byte, error) {
 	if file != "" {
+		st, e := os.Stat(file)
+		if e != nil {
+			return nil, e
+		}
+		if st.Mode().Perm()&0077 != 0 {
+			return nil, fmt.Errorf("passphrase file %s must be owner-only (mode 0600; current mode %04o)", file, st.Mode().Perm())
+		}
 		b, e := os.ReadFile(file)
 		return []byte(strings.TrimRight(string(b), "\r\n")), e
 	}

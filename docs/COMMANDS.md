@@ -37,7 +37,11 @@ from hardware serials and the optional human `--note`.
 ## Flags
 
 Catalog-backed commands take `--catalog PATH` and `--pass-file FILE`; otherwise
-password input is hidden. Device paths are Linux SG nodes or persistent symlinks.
+the default catalog is `$XDG_DATA_HOME/taper/catalog.db` (or
+`~/.local/share/taper/catalog.db`) and an existing secure `session.pass` is used
+automatically. `TAPER_CATALOG` and `TAPER_PASS_FILE` override those defaults;
+explicit flags take precedence. Passphrase files must be mode 0600 and failures
+are reported. Device paths are Linux SG nodes or persistent symlinks.
 `tape probe`, `tape eject` and `key generate` need no catalog.
 
 - `replica create`: `--key-file`, `--no-save-key`, `--hardware-compression` (true).
