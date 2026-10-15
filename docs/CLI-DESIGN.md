@@ -19,7 +19,7 @@ and stage write. Non-moving queries,
 offline browsing, staging and exports do not acquire wear-related prompts.
 Existing password prompts should not be duplicated.
 
-The existing numbered `archive browse --tui` is retained. A future full TUI could
+The existing numbered `archive browse ARCHIVE --tui` is retained. A future full TUI could
 use Bubble Tea and Bubbles with three views: Archives, Stage and Tapes. It would
 reuse the engine and rendering data, display one active operation with progress,
 and keep all source selection policy and cloud operations external. That future

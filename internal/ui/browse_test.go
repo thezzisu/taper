@@ -20,6 +20,19 @@ func TestBrowseRootAndPrefix(t *testing.T) {
 	}
 }
 
+func TestBrowseUsesUnifiedTapeStrip(t *testing.T) {
+	m := engine.Manifest{ID: format.NewID(), Name: "browse", Contents: []engine.Content{{Size: 1, Files: []engine.File{{Path: "x"}}}}}
+	end := uint64(6)
+	reps := []engine.Replica{{Label: "123456L6", Media: "media", End: &end}}
+	var out bytes.Buffer
+	if err := Browse(m, reps, nil, strings.NewReader("q\n"), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "123456L6") || !strings.Contains(out.String(), "unverified") {
+		t.Fatal(out.String())
+	}
+}
+
 func TestBrowseNestedCatalogTree(t *testing.T) {
 	m := engine.Manifest{ID: format.NewID(), Name: "nested", Contents: []engine.Content{{Size: 20, Files: []engine.File{{Path: "outer.zip"}}}}}
 	index := []engine.ArchiveEntry{{Ordinal: 0, Kind: "archive", State: "complete"}, {Ordinal: 0, Entry: "0", Path: "notes.txt", Kind: "file", Size: 5}}

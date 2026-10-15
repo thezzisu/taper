@@ -42,7 +42,9 @@ var sgr = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 // light orange, purple. Letters and the media identifier stay neutral.
 var digitColors = [...]int{196, 226, 113, 117, 250, 208, 205, 28, 215, 141}
 
-func TapeLabel(label string, color, strip bool) string {
+// TapeStrip renders every human-facing tape label using the same cartridge
+// strip shape. Machine-readable output never calls this function.
+func TapeStrip(label string, color bool) string {
 	if !color || !ltoLabel.MatchString(label) {
 		return Safe(label)
 	}
@@ -59,9 +61,7 @@ func TapeLabel(label string, color, strip bool) string {
 				fg = 255
 			}
 		}
-		if strip {
-			part = "[ " + part + " ]"
-		}
+		part = "[ " + part + " ]"
 		fmt.Fprintf(&b, "\x1b[38;5;%d;48;5;%dm%s\x1b[0m", fg, bg, part)
 	}
 	return b.String()
@@ -71,7 +71,7 @@ func TapeHeader(w io.Writer, label, serial, device string) error {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "Tape Label : %s\n", Safe(label))
 	if ColorEnabled(w) && ltoLabel.MatchString(label) {
-		fmt.Fprintf(&b, "             %s\n", TapeLabel(label, true, true))
+		fmt.Fprintf(&b, "             %s\n", TapeStrip(label, true))
 	}
 	fmt.Fprintf(&b, "Tape Serial: %s\nDevice     : %s\n", Safe(serial), Safe(device))
 	_, err := w.Write(b.Bytes())

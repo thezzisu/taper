@@ -78,7 +78,7 @@ func device(name string, write bool) (media.Device, error) {
 func execute(ctx context.Context, command string, paths []string, o *settings, c *cobra.Command) error {
 	db, passFile := o.catalog, o.passFile
 	sg, source, name, rulesFile := &o.device, &o.source, &o.name, &o.rules
-	archive, dest := &o.archive, &o.dest
+	dest := &o.dest
 	keyName, card := &o.keyFile, &o.keycard
 	memory, noCache, tui := &o.memory, &o.noCache, &o.tui
 	archivePasswordFile, remember := &o.passwordFile, &o.remember
@@ -379,26 +379,18 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 		}
 		return output(index)
 	case "archive browse":
-		if *archive == "" {
-			return errors.New("--archive required")
-		}
-		m, e := engine.Load(s, *archive)
+		selector := paths[0]
+		browsePaths := paths[1:]
+		m, e := engine.LoadArchive(s, selector)
 		if e != nil {
 			return e
 		}
-		var state string
-		if e = s.DB.QueryRow("SELECT state FROM batches WHERE id=?", m.ID.String()).Scan(&state); e != nil {
-			return e
-		}
-		if state != "committed" {
-			return errors.New("archive has no committed backup; use stage ls to view staged files")
-		}
-		index, e := engine.ArchiveEntries(s, *archive)
+		index, e := engine.ArchiveEntries(s, m.ID.String())
 		if e != nil {
 			return e
 		}
 		if *tui {
-			reps, e := engine.Replicas(s, *archive)
+			reps, e := engine.Replicas(s, m.ID.String())
 			if e != nil {
 				return e
 			}
@@ -407,7 +399,7 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 		out := []browseResult{}
 		for _, c := range m.Contents {
 			for _, file := range c.Files {
-				if selectedPath(file.Path, paths) {
+				if selectedPath(file.Path, browsePaths) {
 					out = append(out, browseResult{Path: file.Path, Size: c.Size, Hash: c.Hash})
 				}
 			}
@@ -418,7 +410,7 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 					continue
 				}
 				path := file.Path + "!/" + entry.Path
-				if selectedPath(path, paths) {
+				if selectedPath(path, browsePaths) {
 					out = append(out, browseResult{Path: path, Size: entry.Size, Format: entry.Format, State: entry.State})
 				}
 			}

@@ -52,7 +52,7 @@ taper stage unlock --remember 'backup.7z'
 taper stage write --device /dev/sg1 --memory 1073741824 --yes
 
 taper archive ls
-taper archive browse --archive ARCHIVE_ID
+taper archive browse ARCHIVE_ID
 taper catalog export --dest /private/catalog-snapshot
 ```
 
@@ -121,8 +121,9 @@ and process supervision remain external operations.
 
 ## Browse and verify
 
-`archive browse` displays committed archives from the catalog without a tape.
-Use `stage ls` for selections that have not been written. `archive browse --tui`
+`archive browse ARCHIVE` displays a committed archive from the catalog without a tape.
+`ARCHIVE` may be a full ID, a unique ID prefix, or the exact archive name. Use
+`stage ls` for selections that have not been written. `archive browse ARCHIVE --tui`
 currently opens a small numbered terminal menu for one archive; it is not a full
 backup interface. Command names have one spelling, with no aliases.
 `replica mount` exposes original archived files through read-only FUSE, from an

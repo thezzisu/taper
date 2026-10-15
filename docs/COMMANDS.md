@@ -23,7 +23,7 @@ Help and shell completion never open a catalog or a drive.
 | `stage unlock PATH` | Supply a password for an indexed nested archive |
 | `stage write [--device DEVICE] [--image FILE]` | Commit one complete archive, then clear the stage |
 | `archive ls` | List committed archives and physical replica counts |
-| `archive browse --archive ID [PATH...]` | Browse files and nested archive metadata offline |
+| `archive browse ARCHIVE [PATH...]` | Browse files and nested archive metadata offline |
 | `catalog init` | Create an encrypted catalog with no implicit replica set |
 | `catalog export --dest DIR` | Export an authenticated encrypted snapshot |
 | `catalog import --source DIR` | Import a snapshot to a new catalog |
@@ -60,7 +60,8 @@ are reported. Device paths are Linux SG nodes or persistent symlinks.
 - `stage write`: at least one of `--device` and `--image`; `--zstd` (false),
   `--memory`, `--key-file`, `--max-wait` (2s).
 - `stage unlock`: `--password-file`, `--remember`.
-- `archive browse`: `--tui`, a compact numbered offline browser.
+- `archive browse`: `--tui`, a compact numbered offline browser. `ARCHIVE` is a full ID,
+  unique ID prefix, or exact archive name.
 
 Memory is integer bytes, default 1 GiB, supported stream-pool range 8 MiB–64 GiB.
 Pool size is not a process RSS limit. Hardware compression and independent zstd
@@ -70,7 +71,7 @@ external tasks.
 
 ## Selectors, output and confirmation
 
-`--archive` accepts a full 32-hex ID or a unique prefix of at least six hex digits:
+Tape range `--archive` accepts a full 32-hex ID or a unique prefix of at least six hex digits:
 `FIRST`, `FIRST-LAST`, `FIRST-`, `-LAST`. Use `--archive=-LAST` when needed for
 shell/flag clarity. Endpoints belong to the selected set or available tape
 prefix, are inclusive, and cannot be reversed. Sync-from must start at the

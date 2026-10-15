@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/thezzisu/taper/internal/catalog"
 	"github.com/thezzisu/taper/internal/format"
@@ -67,6 +69,92 @@ func ListBatches(s *catalog.Store, id string) ([]BatchMeta, error) {
 		end = b.EndPos
 	}
 	return out, rows.Err()
+}
+
+// LoadArchive resolves the selector used by offline archive browsing. Full IDs,
+// unique hexadecimal ID prefixes and exact committed archive names are accepted.
+// A name must be unique; IDs take precedence when a selector could mean both.
+func LoadArchive(s *catalog.Store, selector string) (Manifest, error) {
+	if selector == "" {
+		return Manifest{}, errors.New("archive selector is required")
+	}
+	if id, err := format.ParseID(selector); err == nil {
+		var state string
+		err = s.DB.QueryRow("SELECT state FROM batches WHERE id=?", id.String()).Scan(&state)
+		if err == nil {
+			if state != "committed" {
+				return Manifest{}, fmt.Errorf("archive %s is not committed", id.String())
+			}
+			return Load(s, id.String())
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return Manifest{}, err
+		}
+	}
+	if isHexPrefix(selector) {
+		rows, err := s.DB.Query("SELECT id FROM batches WHERE state='committed' AND lower(id) LIKE ? ORDER BY seq", strings.ToLower(selector)+"%")
+		if err != nil {
+			return Manifest{}, err
+		}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err = rows.Scan(&id); err != nil {
+				rows.Close()
+				return Manifest{}, err
+			}
+			ids = append(ids, id)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return Manifest{}, err
+		}
+		if len(ids) > 1 {
+			return Manifest{}, fmt.Errorf("archive ID prefix %q is ambiguous; use a longer prefix", selector)
+		}
+		if len(ids) == 1 {
+			return Load(s, ids[0])
+		}
+	}
+	rows, err := s.DB.Query("SELECT id FROM batches WHERE state='committed' AND name=? ORDER BY seq", selector)
+	if err != nil {
+		return Manifest{}, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return Manifest{}, err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return Manifest{}, err
+	}
+	switch len(ids) {
+	case 0:
+		return Manifest{}, fmt.Errorf("no committed archive matches %q", selector)
+	case 1:
+		return Load(s, ids[0])
+	default:
+		return Manifest{}, fmt.Errorf("archive name %q is ambiguous; use its ID", selector)
+	}
+}
+
+func isHexPrefix(s string) bool {
+	if len(s) < 6 || len(s) > 32 {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // MemberPrefix also checks positions, not just the maximum sequence number.

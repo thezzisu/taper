@@ -137,13 +137,14 @@ func TestCLIOfflineWorkflow(t *testing.T) {
 	var id string
 	s.DB.QueryRow("SELECT id FROM batches").Scan(&id)
 	s.Close()
-	if e := run(context.Background(), append(append([]string{"archive", "browse"}, base...), "--archive", id)); e == nil {
+	if e := run(context.Background(), append(append([]string{"archive", "browse"}, base...), id)); e == nil {
 		t.Fatal("uncommitted plan was presented as an archive")
 	}
 	call("stage plan")
 	call("stage write", "--device", sim, "--memory", "8388608", "--yes")
 	call("archive ls")
-	call("archive browse", "--archive", id)
+	call("archive browse", id)
+	call("archive browse", "archive")
 	var out, stderr bytes.Buffer
 	c := newCommand()
 	c.SetOut(&out)

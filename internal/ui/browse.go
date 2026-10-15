@@ -88,7 +88,7 @@ func Browse(m engine.Manifest, reps []engine.Replica, index []engine.ArchiveEntr
 		if IsTerminal(out) {
 			fmt.Fprint(out, "\033[2J\033[H")
 		}
-		fmt.Fprintf(out, "%s / %s\n\n", m.Name, prefix)
+		fmt.Fprintf(out, "%s (%s) / %s\n\n", m.Name, m.ID.String()[:8], prefix)
 		for i, n := range names {
 			child := children[n]
 			suffix := ""
@@ -99,7 +99,11 @@ func Browse(m engine.Manifest, reps []engine.Replica, index []engine.ArchiveEntr
 		}
 		fmt.Fprintln(out, "\nReplica tapes:")
 		for _, r := range reps {
-			fmt.Fprintf(out, "  %s [%s] verified=%t\n", TapeLabel(r.Label, ColorEnabled(out), false), r.Media, r.Verified)
+			status := "unverified"
+			if r.Verified {
+				status = "verified"
+			}
+			fmt.Fprintf(out, "  %s  %s (%s)\n", TapeStrip(r.Label, ColorEnabled(out)), status, r.Media)
 		}
 		fmt.Fprint(out, "\nNumber: open | u: parent | p: details | q: quit > ")
 		line, err := reader.ReadString('\n')

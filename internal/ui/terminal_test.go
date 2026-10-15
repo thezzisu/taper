@@ -27,8 +27,11 @@ func TestVerificationPreviewAndConfirmation(t *testing.T) {
 	if strings.Contains(text, "\x1b") {
 		t.Fatal("redirected preview contains terminal control", text)
 	}
-	if TapeLabel("custom\x1b", true, true) != "custom " {
+	if TapeStrip("custom\x1b", true) != "custom " {
 		t.Fatal("unsafe custom label")
+	}
+	if TapeStrip("123456L6", true) == TapeStrip("123456L6", false) {
+		t.Fatal("colored tape strip was not rendered")
 	}
 	for _, answer := range []string{"\n", "no\n", "", "yes without newline"} {
 		if Confirm(strings.NewReader(answer), &b, true) == nil {

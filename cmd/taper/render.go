@@ -106,7 +106,7 @@ func renderResult(w io.Writer, command, device string, value any, machine bool) 
 			if tape["write_budget_bytes"] != nil {
 				budget = fmt.Sprint(tape["write_budget_bytes"])
 			}
-			rows = append(rows, ui.Row{Cells: []string{ui.TapeLabel(tape["label"].(string), color, false), ui.Safe(tape["serial"].(string)), budget, ui.Safe(tape["state"].(string)), ui.Safe(tape["sampled"].(string)), ui.Safe(fmt.Sprint(tape["note"]))}})
+			rows = append(rows, ui.Row{Cells: []string{ui.TapeStrip(tape["label"].(string), color), ui.Safe(tape["serial"].(string)), budget, ui.Safe(tape["state"].(string)), ui.Safe(tape["sampled"].(string)), ui.Safe(fmt.Sprint(tape["note"]))}})
 		}
 		return ui.Table(w, []string{"LABEL", "SERIAL", "WRITE BUDGET (B)", "STATE", "SAMPLED", "NOTE"}, rows)
 	case []archiveResult:
@@ -141,7 +141,7 @@ func renderResult(w io.Writer, command, device string, value any, machine bool) 
 			}
 			rows := []ui.Row{}
 			for _, r := range v["recommendations"].([]engine.Recommendation) {
-				label, budget := ui.TapeLabel(r.Label, color, false), strconv.FormatInt(r.Remaining, 10)
+				label, budget := ui.TapeStrip(r.Label, color), strconv.FormatInt(r.Remaining, 10)
 				if r.ID == "" {
 					label, budget = "<New tape>", "-"
 				}

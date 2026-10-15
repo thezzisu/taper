@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -134,5 +135,39 @@ func TestArchiveRangePrefixes(t *testing.T) {
 	all = append(all, BatchMeta{ID: "abcdef00000000000000000000000004"})
 	if _, e := ParseArchiveRange("abcdef", all); e == nil {
 		t.Fatal("ambiguous prefix accepted")
+	}
+}
+
+func TestLoadArchiveByNameAndPrefix(t *testing.T) {
+	s, _, root := setup(t)
+	if err := os.WriteFile(filepath.Join(root, "file"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StageAdd(context.Background(), s, root, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	m, err := StagePlan(context.Background(), s, "named archive", "", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := ResolveReplicaSet(s, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, err := media.OpenImage(filepath.Join(t.TempDir(), "archive.img"), true, set.ID, set.KeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer image.Close()
+	if _, _, err = StageWrite(context.Background(), s, nil, nil, WriteOptions{Image: image, Memory: 8 << 20}); err != nil {
+		t.Fatal(err)
+	}
+	byName, err := LoadArchive(s, "named archive")
+	if err != nil || byName.ID != m.ID {
+		t.Fatal(byName.ID, err)
+	}
+	byPrefix, err := LoadArchive(s, m.ID.String()[:8])
+	if err != nil || byPrefix.ID != m.ID {
+		t.Fatal(byPrefix.ID, err)
 	}
 }
