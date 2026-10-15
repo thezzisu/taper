@@ -25,6 +25,7 @@ type Store struct {
 	Path string
 	key  []byte
 }
+
 type unlock struct {
 	Version int    `json:"version"`
 	Salt    []byte `json:"salt"`
@@ -89,9 +90,19 @@ func Create(name string, pass []byte) (*Store, error) {
 	if e != nil {
 		return nil, e
 	}
-	return connect(name, key, true)
+	return connect(name, key, true, false)
 }
 func Open(name string, pass []byte) (*Store, error) {
+	return openWithMode(name, pass, false)
+}
+
+// OpenReadOnly opens the encrypted catalog with SQLite mode=ro and does not
+// issue journal, synchronous, foreign-key or temp-store write pragmas.
+func OpenReadOnly(name string, pass []byte) (*Store, error) {
+	return openWithMode(name, pass, true)
+}
+
+func openWithMode(name string, pass []byte, readOnly bool) (*Store, error) {
 	b, e := os.ReadFile(name + ".unlock")
 	if e != nil {
 		return nil, e
@@ -119,7 +130,7 @@ func Open(name string, pass []byte) (*Store, error) {
 			return nil, errors.New("export authentication failed")
 		}
 	}
-	return connect(name, key, false)
+	return connect(name, key, false, readOnly)
 }
 func openDatabase(name string, key []byte, mode string) (*sql.DB, error) {
 	u := url.URL{Scheme: "file", Path: filepath.ToSlash(name), RawQuery: "vfs=adiantum&mode=" + mode}
@@ -138,9 +149,13 @@ func checkVersion(db *sql.DB) error {
 	if count != 1 || low != 1 || high != 1 {
 		return errors.New("unsupported catalog schema version; expected 1")
 	}
-	rows, e := db.Query("SELECT c.ordinal,e.entry,e.path,e.kind,e.size,e.format,e.state,e.message,e.encrypted,e.password,e.volumes,r.confirmed_bytes,r.confirmed_records,r.end_pos,m.sampled,m.info FROM archive_scans c,archive_entries e,replicas r,media_samples m LIMIT 0")
+	rows, e := db.Query(`SELECT rs.id,rs.name,rs.key_id,rs.key,rs.hardware_compression,
+ m.replica_id,m.note,b.replica_id,b.stream_id,b.seq,b.begin_pos,b.data_pos,b.commit_pos,b.blocks,b.end_pos,b.encoded_bytes,st.replica_id,
+ e.entry,e.path,e.kind,e.size,e.format,e.state,e.message,e.encrypted,e.password,e.volumes,
+ r.confirmed_bytes,r.confirmed_records,r.end_pos,ms.sampled,ms.info
+ FROM replica_sets rs,media m,batches b,stage st,archive_entries e,replicas r,media_samples ms LIMIT 0`)
 	if e != nil {
-		return errors.New("unsupported catalog layout; explicitly convert a backed-up catalog before opening it with this build")
+		return errors.New("unsupported catalog layout; explicitly migrate a backed-up catalog to the current v1 schema")
 	}
 	rows.Close()
 	var invalid int
@@ -152,10 +167,13 @@ func checkVersion(db *sql.DB) error {
 	}
 	return nil
 }
-func connect(name string, key []byte, create bool) (*Store, error) {
+func connect(name string, key []byte, create bool, readOnly bool) (*Store, error) {
 	mode := "rw"
 	if create {
 		mode = "rwc"
+	}
+	if readOnly {
+		mode = "ro"
 	}
 	db, e := openDatabase(name, key, mode)
 	if e != nil {
@@ -168,8 +186,10 @@ func connect(name string, key []byte, create bool) (*Store, error) {
 			return fail(e)
 		}
 	}
-	if _, e = db.Exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY;"); e != nil {
-		return fail(e)
+	if !readOnly {
+		if _, e = db.Exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY;"); e != nil {
+			return fail(e)
+		}
 	}
 	if create {
 		tx, e := db.Begin()
@@ -184,7 +204,11 @@ func connect(name string, key []byte, create bool) (*Store, error) {
 			return fail(e)
 		}
 	}
-	os.Chmod(name, 0600)
+	if !readOnly {
+		if e = os.Chmod(name, 0600); e != nil {
+			return fail(e)
+		}
+	}
 	return s, nil
 }
 func (s *Store) Close() error { clear(s.key); return s.DB.Close() }
@@ -281,8 +305,9 @@ func (s *Store) Rekey(pass []byte) error {
 const schema = `
 CREATE TABLE schema_version(version INTEGER NOT NULL);
 INSERT INTO schema_version VALUES(1);
-CREATE TABLE media(id TEXT PRIMARY KEY,label TEXT NOT NULL,serial TEXT NOT NULL UNIQUE,total INTEGER NOT NULL,remaining INTEGER NOT NULL,sampled TEXT NOT NULL,state TEXT NOT NULL,key_id TEXT NOT NULL,key BLOB,hardware_compression INTEGER CHECK(hardware_compression IN (0,1)));
-CREATE TABLE batches(id TEXT PRIMARY KEY,name TEXT NOT NULL,source TEXT NOT NULL,created TEXT NOT NULL,rules TEXT NOT NULL,digest TEXT NOT NULL,logical_bytes INTEGER NOT NULL,files INTEGER NOT NULL,required_replicas INTEGER NOT NULL DEFAULT 1,state TEXT NOT NULL);
+CREATE TABLE replica_sets(id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,key_id TEXT NOT NULL,key BLOB,hardware_compression INTEGER NOT NULL CHECK(hardware_compression IN (0,1)));
+CREATE TABLE media(id TEXT PRIMARY KEY,replica_id TEXT NOT NULL REFERENCES replica_sets(id),label TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',serial TEXT NOT NULL UNIQUE,total INTEGER NOT NULL,remaining INTEGER NOT NULL,sampled TEXT NOT NULL,state TEXT NOT NULL,key_id TEXT NOT NULL,key BLOB,hardware_compression INTEGER CHECK(hardware_compression IN (0,1)));
+CREATE TABLE batches(id TEXT PRIMARY KEY,replica_id TEXT NOT NULL REFERENCES replica_sets(id),stream_id TEXT NOT NULL,seq INTEGER NOT NULL,name TEXT NOT NULL,source TEXT NOT NULL,created TEXT NOT NULL,rules TEXT NOT NULL,digest TEXT NOT NULL,logical_bytes INTEGER NOT NULL,files INTEGER NOT NULL,begin_pos INTEGER NOT NULL,data_pos INTEGER NOT NULL,commit_pos INTEGER NOT NULL,blocks INTEGER NOT NULL,end_pos INTEGER NOT NULL,encoded_bytes INTEGER,state TEXT NOT NULL,UNIQUE(replica_id,seq));
 CREATE TABLE contents(batch_id TEXT NOT NULL REFERENCES batches(id),ordinal INTEGER NOT NULL,size INTEGER NOT NULL,hash TEXT NOT NULL,meta_offset INTEGER NOT NULL,data_offset INTEGER NOT NULL,PRIMARY KEY(batch_id,ordinal));
 CREATE INDEX content_hash ON contents(hash,size);
 CREATE TABLE archive_scans(batch_id TEXT NOT NULL,ordinal INTEGER NOT NULL,PRIMARY KEY(batch_id,ordinal),FOREIGN KEY(batch_id,ordinal) REFERENCES contents(batch_id,ordinal) ON DELETE CASCADE);
@@ -296,7 +321,7 @@ CREATE TABLE scan_checkpoints(root TEXT NOT NULL,path TEXT NOT NULL,fsid TEXT NO
 CREATE TABLE batch_sources(batch_id TEXT PRIMARY KEY REFERENCES batches(id),device INTEGER NOT NULL,inode INTEGER NOT NULL,fsid TEXT NOT NULL);
 CREATE TABLE media_health(media_id TEXT PRIMARY KEY REFERENCES media(id),unhealthy INTEGER NOT NULL,info TEXT NOT NULL,sampled TEXT NOT NULL);
 CREATE TABLE media_samples(id INTEGER PRIMARY KEY,media_id TEXT NOT NULL REFERENCES media(id),sampled TEXT NOT NULL,info TEXT NOT NULL);
-CREATE TABLE stage(id INTEGER PRIMARY KEY CHECK(id=1),source TEXT NOT NULL,identity TEXT NOT NULL,rules TEXT NOT NULL,plan_id TEXT REFERENCES batches(id));
+CREATE TABLE stage(id INTEGER PRIMARY KEY CHECK(id=1),replica_id TEXT REFERENCES replica_sets(id),source TEXT NOT NULL,identity TEXT NOT NULL,rules TEXT NOT NULL,plan_id TEXT REFERENCES batches(id));
 CREATE TABLE stage_files(path TEXT PRIMARY KEY,source_path TEXT NOT NULL,size INTEGER NOT NULL,mtime INTEGER NOT NULL);
 CREATE TABLE stage_exclusions(path TEXT PRIMARY KEY,size INTEGER NOT NULL,reason TEXT NOT NULL);
 `

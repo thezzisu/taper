@@ -12,7 +12,7 @@ func TestTapeCompressionPreferenceAppliedBeforeEachWrite(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		s, d, root := setup(t)
 		spy := &observedTape{Device: d}
-		label, err := RegisterMedia(s, spy, "test", nil, true, enabled)
+		label, err := registerTestMember(s, spy, "test", nil, true, enabled)
 		if err != nil || spy.compressions != 0 {
 			t.Fatal("registration changed drive settings", err, spy)
 		}
@@ -27,7 +27,7 @@ func TestTapeCompressionPreferenceAppliedBeforeEachWrite(t *testing.T) {
 			if _, err = StageAdd(context.Background(), s, root, nil, nil); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = StagePlan(context.Background(), s, "data", 1, false, nil); err != nil {
+			if _, err = StagePlan(context.Background(), s, "data", "", false, nil); err != nil {
 				t.Fatal(err)
 			}
 			if err = d.SetCompression(!enabled); err != nil { // Another application changes the drive.
@@ -53,46 +53,29 @@ func TestTapeCompressionPreferenceAppliedBeforeEachWrite(t *testing.T) {
 	}
 }
 
-func TestUnknownCompressionPreferenceRequiresRegistration(t *testing.T) {
+func TestReplicaCompressionIsAuthoritative(t *testing.T) {
 	s, d, root := setup(t)
-	l, err := RegisterMedia(s, d, "test", nil, false, false)
-	if err != nil {
-		t.Fatal(err)
+	m, e := registerTestMember(s, d, "test", nil, true, false)
+	if e != nil {
+		t.Fatal(e)
 	}
-	if _, err = prepareMedia(s, d, nil); err != nil {
-		t.Fatal(err)
+	if _, e = s.DB.Exec("UPDATE media SET hardware_compression=NULL WHERE id=?", m.ID); e != nil {
+		t.Fatal(e)
 	}
-	if _, err = s.DB.Exec("UPDATE media SET hardware_compression=NULL WHERE id=?", l.ID); err != nil {
-		t.Fatal(err)
+	if e = os.WriteFile(filepath.Join(root, "data"), []byte("data"), 0600); e != nil {
+		t.Fatal(e)
 	}
-	spy := &observedTape{Device: d}
-	if _, err = prepareMedia(s, spy, nil); err == nil {
-		t.Fatal("unknown preference guessed")
+	if _, e = StageAdd(context.Background(), s, root, nil, nil); e != nil {
+		t.Fatal(e)
 	}
-	if spy.keys != 0 || spy.compressions != 0 || spy.writes != 0 || spy.locates != 0 {
-		t.Fatal("unknown preference touched tape settings", spy)
+	if _, e = StagePlan(context.Background(), s, "data", "", false, nil); e != nil {
+		t.Fatal(e)
 	}
-	if err = os.WriteFile(filepath.Join(root, "file"), []byte("data"), 0600); err != nil {
-		t.Fatal(err)
+	if _, _, e = StageWrite(context.Background(), s, d, nil, WriteOptions{Memory: 8 << 20}); e != nil {
+		t.Fatal(e)
 	}
-	if _, err = StageAdd(context.Background(), s, root, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	m, err := StagePlan(context.Background(), s, "data", 1, false, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	recs, err := Recommend(s, m)
-	if err != nil || len(recs) != 1 || recs[0].ID != "" {
-		t.Fatal("unknown preference recommended", recs, err)
-	}
-	if _, err = RegisterMedia(s, spy, "test", nil, false, false); err != nil {
-		t.Fatal(err)
-	}
-	if spy.compressions != 0 {
-		t.Fatal("registration changed hardware")
-	}
-	if _, err = prepareMedia(s, spy, nil); err != nil {
-		t.Fatal(err)
+	info, e := d.Info()
+	if e != nil || info.Compression {
+		t.Fatal("set compression not applied", info, e)
 	}
 }

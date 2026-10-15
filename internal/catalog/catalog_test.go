@@ -64,7 +64,10 @@ func TestEncryptionRekeyExport(t *testing.T) {
 		t.Fatal(e)
 	}
 	secret := "PRIVATE_PATH_SHOULD_NOT_APPEAR"
-	if _, e = s.DB.Exec("INSERT INTO media(id,label,serial,total,remaining,sampled,state,key_id,key,hardware_compression) VALUES(?,?,?,?,?,?,?,?,?,?)", secret, secret, "serial", 999, 999, "today", "open", "", nil, false); e != nil {
+	if _, e = s.DB.Exec("INSERT INTO replica_sets VALUES(?,'test','',NULL,0)", secret); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.DB.Exec("INSERT INTO media(id,replica_id,label,serial,total,remaining,sampled,state,key_id,key,hardware_compression) VALUES(?,?,?,?,?,?,?,?,?,?,?)", secret, secret, secret, "serial", 999, 999, "today", "open", "", nil, false); e != nil {
 		t.Fatal(e)
 	}
 	if e = checkIntegrity(s); e != nil {
@@ -100,6 +103,9 @@ func TestEncryptionRekeyExport(t *testing.T) {
 	if e = Import(export, imported, []byte("next")); e != nil {
 		t.Fatal(e)
 	}
+	if _, e = os.Stat(imported + ".mac"); e != nil {
+		t.Fatalf("authenticated MAC was not imported: %v", e)
+	}
 	copy, e := Open(imported, []byte("next"))
 	if e != nil {
 		t.Fatal(e)
@@ -112,4 +118,23 @@ func TestEncryptionRekeyExport(t *testing.T) {
 		t.Fatal("hardware compression preference lost in export/import", compression, e)
 	}
 	copy.Close()
+}
+
+func TestOpenReadOnlyDoesNotWrite(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "catalog.db")
+	s, err := Create(name, []byte("readonly"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r, err := OpenReadOnly(name, []byte("readonly"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err = r.DB.Exec("CREATE TABLE should_fail(x)"); err == nil {
+		t.Fatal("read-only catalog accepted a write")
+	}
 }

@@ -248,4 +248,11 @@ func (s *Sim) Flush() error {
 	}
 	return s.f.Sync()
 }
+func (s *Sim) Eject() error {
+	if s.f == nil {
+		return errors.New("simulator is closed")
+	}
+	s.pos = 0
+	return nil
+}
 func (s *Sim) Close() error { return s.f.Close() }

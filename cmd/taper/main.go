@@ -11,7 +11,6 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/spf13/cobra"
 	container "github.com/thezzisu/taper/internal/archive"
@@ -72,16 +71,15 @@ func device(name string, write bool) (media.Device, error) {
 func execute(ctx context.Context, command string, paths []string, o *settings, c *cobra.Command) error {
 	db, passFile := o.catalog, o.passFile
 	sg, source, name, rulesFile := &o.device, &o.source, &o.name, &o.rules
-	archive, copies, dest := &o.archive, &o.copies, &o.dest
-	keyName, card, noSave := &o.keyFile, &o.keycard, &o.noSaveKey
-	hardwareCompression, zstd := &o.hardwareCompression, &o.zstd
-	memory, maxWait, noCache, tui := &o.memory, &o.maxWait, &o.noCache, &o.tui
+	archive, dest := &o.archive, &o.dest
+	keyName, card := &o.keyFile, &o.keycard
+	memory, noCache, tui := &o.memory, &o.noCache, &o.tui
 	archivePasswordFile, remember := &o.passwordFile, &o.remember
 	output := func(v any) error { return renderResult(c.OutOrStdout(), command, *sg, v, o.json) }
 	if o.json && *tui {
 		return errors.New("--json cannot be combined with --tui")
 	}
-	if (command == "tape verify" || command == "tape reindex" || command == "stage write") && (*memory < 8<<20 || *memory > engine.MaxMemory) {
+	if (command == "tape verify" || command == "tape reindex" || command == "stage write" || command == "tape sync" || command == "replica mount") && (*memory < 8<<20 || *memory > engine.MaxMemory) {
 		return errors.New("--memory must be between 8388608 and 68719476736 bytes")
 	}
 	if command == "key generate" {
@@ -131,6 +129,36 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 		}
 		return output(i)
 	}
+	if command == "tape eject" {
+		d, e := device(*sg, !o.dryRun)
+		if e != nil {
+			return e
+		}
+		defer d.Close()
+		i, e := d.Info()
+		if e != nil {
+			return e
+		}
+		if o.dryRun {
+			return output(i)
+		}
+		label := i.Barcode
+		if label == "" {
+			label = i.Serial
+		}
+		if e = ui.TapeHeader(c.ErrOrStderr(), label, i.Serial, *sg); e != nil {
+			return e
+		}
+		if !o.yes {
+			if e = ui.Confirm(c.InOrStdin(), c.ErrOrStderr(), ui.IsTerminal(c.InOrStdin())); e != nil {
+				return e
+			}
+		}
+		if e = d.Eject(); e != nil {
+			return e
+		}
+		return output(map[string]any{"serial": i.Serial, "ejected": true})
+	}
 	pass, e := password(passFile)
 	if e != nil {
 		return e
@@ -148,6 +176,8 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 	var s *catalog.Store
 	if command == "catalog init" {
 		s, e = catalog.Create(db, pass)
+	} else if o.dryRun || command == "tape sync" && o.to != "" || command == "replica mount" || command == "tape ls" || command == "replica ls" || strings.HasPrefix(command, "archive ") || command == "stage ls" {
+		s, e = catalog.OpenReadOnly(db, pass)
 	} else {
 		s, e = catalog.Open(db, pass)
 	}
@@ -179,19 +209,19 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 		return output(map[string]string{"catalog": db, "status": "passphrase changed"})
 	}
 	if command == "tape ls" {
-		rows, e := s.DB.Query("SELECT id,label,serial,total,remaining,sampled,state,key_id,hardware_compression,COALESCE((SELECT info FROM media_health WHERE media_id=media.id),'{}'),(SELECT COUNT(*) FROM replicas WHERE media_id=media.id AND state IN ('writing','failed')),COALESCE((SELECT unhealthy FROM media_health WHERE media_id=media.id),0) FROM media ORDER BY label")
+		rows, e := s.DB.Query("SELECT id,label,note,serial,total,remaining,sampled,state,key_id,hardware_compression,COALESCE((SELECT info FROM media_health WHERE media_id=media.id),'{}'),(SELECT COUNT(*) FROM replicas WHERE media_id=media.id AND state IN ('writing','failed')),COALESCE((SELECT unhealthy FROM media_health WHERE media_id=media.id),0) FROM media ORDER BY label")
 		if e != nil {
 			return e
 		}
 		defer rows.Close()
 		out := []map[string]any{}
 		for rows.Next() {
-			var id, l, serial, sampled, state, k, savedInfo string
+			var id, l, note, serial, sampled, state, k, savedInfo string
 			var total, remaining int64
 			var incomplete int
 			var compression *bool
 			var unhealthy bool
-			if e = rows.Scan(&id, &l, &serial, &total, &remaining, &sampled, &state, &k, &compression, &savedInfo, &incomplete, &unhealthy); e != nil {
+			if e = rows.Scan(&id, &l, &note, &serial, &total, &remaining, &sampled, &state, &k, &compression, &savedInfo, &incomplete, &unhealthy); e != nil {
 				return e
 			}
 			var info media.Info
@@ -203,7 +233,7 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 			if limit, available, err := info.Budget(); err == nil && incomplete == 0 && !unhealthy && compression != nil && (state == "open" || state == "registered") {
 				budget = max(0, available-engine.Reserve(limit))
 			}
-			out = append(out, map[string]any{"id": id, "label": l, "serial": serial, "reported_total_bytes": total, "reported_remaining_bytes": remaining, "native_limit_bytes": info.NativeLimit, "write_budget_bytes": budget, "logical_position": info.Position, "sampled": sampled, "state": state, "key_id": k, "hardware_compression": compression, "early_warning": info.EarlyWarning, "incomplete_writes": incomplete, "unhealthy": unhealthy, "tape_alerts": info.Alerts})
+			out = append(out, map[string]any{"id": id, "label": l, "note": note, "serial": serial, "reported_total_bytes": total, "reported_remaining_bytes": remaining, "native_limit_bytes": info.NativeLimit, "write_budget_bytes": budget, "logical_position": info.Position, "sampled": sampled, "state": state, "key_id": k, "hardware_compression": compression, "early_warning": info.EarlyWarning, "incomplete_writes": incomplete, "unhealthy": unhealthy, "tape_alerts": info.Alerts})
 		}
 		if e = rows.Err(); e != nil {
 			return e
@@ -215,61 +245,8 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 		return e
 	}
 	defer clear(key)
-	if command == "tape register" {
-		d, e := device(*sg, false)
-		if e != nil {
-			return e
-		}
-		defer d.Close()
-		l, e := engine.RegisterMedia(s, d, *name, key, !*noSave, *hardwareCompression)
-		if e != nil {
-			return e
-		}
-		return output(registrationResult{l, *hardwareCompression})
-	}
-	if command == "tape verify" || command == "tape reindex" {
-		d, e := device(*sg, false)
-		if e != nil {
-			return e
-		}
-		defer d.Close()
-		var result engine.TapeResult
-		if command == "tape verify" {
-			plan, e := engine.PlanVerification(s, d, paths)
-			if e != nil {
-				return e
-			}
-			if o.dryRun {
-				if o.json {
-					return output(plan)
-				}
-				return ui.VerificationPlan(c.OutOrStdout(), *sg, plan)
-			}
-			if e = ui.VerificationPlan(c.ErrOrStderr(), *sg, plan); e != nil {
-				return e
-			}
-			if !o.yes {
-				if e = ui.Confirm(c.InOrStdin(), c.ErrOrStderr(), ui.IsTerminal(c.InOrStdin())); e != nil {
-					return e
-				}
-			}
-			progress := ui.NewProgress(c.ErrOrStderr(), "Verifying", int64(plan.End-plan.Start))
-			result, e = engine.VerifyTape(ctx, s, d, plan, key, engine.ReadOptions{Memory: *memory, Progress: progress.Update})
-			progress.SetFinal(result.Records, result.Bytes)
-			progress.Close(e == nil)
-			if oe := output(result); e == nil {
-				e = oe
-			}
-			return e
-		}
-		progress := ui.NewProgress(c.ErrOrStderr(), "Reindexing", -1)
-		result, e = engine.ReindexTape(ctx, s, d, key, engine.ReadOptions{Memory: *memory, Progress: progress.Update})
-		progress.SetFinal(result.Records, result.Bytes)
-		progress.Close(e == nil)
-		if oe := output(result); e == nil {
-			e = oe
-		}
-		return e
+	if command == "replica create" || command == "replica ls" || command == "replica add" || command == "replica rm" || command == "replica mount" || command == "tape sync" || command == "tape verify" || command == "tape reindex" || command == "stage write" {
+		return executeMedia(ctx, command, paths, o, c, s, key)
 	}
 	if command == "archive ls" {
 		rows, e := s.DB.Query("SELECT id,name,created,files,logical_bytes,(SELECT COUNT(DISTINCT media_id) FROM replicas WHERE batch_id=batches.id AND state='committed') FROM batches WHERE state='committed' ORDER BY created")
@@ -280,7 +257,7 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 		out := []archiveResult{}
 		for rows.Next() {
 			var item archiveResult
-			if e = rows.Scan(&item.ID, &item.Name, &item.Created, &item.Files, &item.Bytes, &item.Copies); e != nil {
+			if e = rows.Scan(&item.ID, &item.Name, &item.Created, &item.Files, &item.Bytes, &item.Replicas); e != nil {
 				return e
 			}
 			out = append(out, item)
@@ -324,8 +301,9 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 		}
 		return output(out)
 	case "stage plan":
+
 		progress := ui.NewProgress(c.ErrOrStderr(), "Planning", -1)
-		m, e := engine.StagePlan(ctx, s, *name, *copies, *noCache, func(n int64) {
+		m, e := engine.StagePlan(ctx, s, *name, o.replica, *noCache, func(n int64) {
 			progress.Update(uint64(n), n)
 		})
 		progress.Close(e == nil)
@@ -393,38 +371,6 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 			return e
 		}
 		return output(index)
-	case "stage write":
-		var logical int64
-		if e = s.DB.QueryRow("SELECT logical_bytes FROM batches JOIN stage ON stage.plan_id=batches.id WHERE stage.id=1").Scan(&logical); e != nil {
-			return fmt.Errorf("a staged plan is required: %w", e)
-		}
-		d, e := device(*sg, true)
-		if e != nil {
-			return e
-		}
-		defer d.Close()
-		progress := ui.NewProgress(c.ErrOrStderr(), "Writing", 1+(logical-1)/format.PayloadSize)
-		var waits, pauses int
-		id, rep, e := engine.StageWrite(ctx, s, d, key, engine.WriteOptions{Memory: *memory, Zstd: *zstd, MaxWait: *maxWait, Underflow: func(time.Duration) { waits++ }, Pause: func() { pauses++ }, Progress: progress.Update})
-		result := map[string]any{"archive": id, "replica": rep, "supply_waits": waits, "refill_pauses": pauses}
-		if e == nil {
-			var reps []engine.Replica
-			reps, e = engine.Replicas(s, id)
-			for _, r := range reps {
-				if r.ID == rep && r.ConfirmedBytes != nil {
-					progress.SetFinal(r.Blocks, *r.ConfirmedBytes)
-					result["confirmed_bytes"], result["data_records"] = *r.ConfirmedBytes, r.Blocks
-					if r.End != nil {
-						result["end_position"] = *r.End
-					}
-				}
-			}
-		}
-		progress.Close(e == nil)
-		if oe := output(result); e == nil {
-			e = oe
-		}
-		return e
 	case "archive browse":
 		if *archive == "" {
 			return errors.New("--archive required")

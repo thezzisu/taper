@@ -23,7 +23,7 @@ func (d *unreadableIdentity) ReadIdentity() ([]byte, error) { return d.identity,
 func TestAppendRejectsBadMAMWithoutReadingTape(t *testing.T) {
 	s, d, root := setup(t)
 	makeSource(t, root)
-	if _, e := RegisterMedia(s, d, "test", nil, true, true); e != nil {
+	if _, e := registerTestMember(s, d, "test", nil, true, true); e != nil {
 		t.Fatal(e)
 	}
 	if _, e := prepareMedia(s, d, nil); e != nil {
@@ -32,7 +32,7 @@ func TestAppendRejectsBadMAMWithoutReadingTape(t *testing.T) {
 	if _, e := StageAdd(context.Background(), s, root, nil, nil); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := StagePlan(context.Background(), s, "append", 1, false, nil); e != nil {
+	if _, e := StagePlan(context.Background(), s, "append", "", false, nil); e != nil {
 		t.Fatal(e)
 	}
 	for _, name := range []string{"absent", "malformed", "invalid-id", "io-error"} {
@@ -59,7 +59,7 @@ func TestAppendRejectsBadMAMWithoutReadingTape(t *testing.T) {
 
 func TestAppendBatchesThenOneFullVerification(t *testing.T) {
 	s, d, root := setup(t)
-	if _, e := RegisterMedia(s, d, "test", nil, true, true); e != nil {
+	if _, e := registerTestMember(s, d, "test", nil, true, true); e != nil {
 		t.Fatal(e)
 	}
 	if _, e := prepareMedia(s, d, nil); e != nil {
@@ -73,7 +73,7 @@ func TestAppendBatchesThenOneFullVerification(t *testing.T) {
 		if _, e := StageAdd(context.Background(), s, root, nil, nil); e != nil {
 			t.Fatal(e)
 		}
-		if _, e := StagePlan(context.Background(), s, "batch", 1, true, nil); e != nil {
+		if _, e := StagePlan(context.Background(), s, "batch", "", true, nil); e != nil {
 			t.Fatal(e)
 		}
 		spy := &observedTape{Device: d}
@@ -92,7 +92,7 @@ func TestAppendBatchesThenOneFullVerification(t *testing.T) {
 	}
 	end, _ := d.Position()
 	spy := &observedTape{Device: d}
-	result, e := verifyAll(context.Background(), s, spy, nil, ReadOptions{Memory: 8 << 20})
+	result, e := verifyAll(context.Background(), s, spy, nil, ReadOptions{Memory: 8 << 20, HardwareCompression: testCompression()})
 	if e != nil || !result.ReachedEOD || result.Archives != 2 || result.Records != end || spy.locates != 1 || spy.ends != 0 || spy.writes != 0 || uint64(spy.reads) != end+1 {
 		t.Fatal("final verification was not one forward pass", result, e, spy)
 	}
@@ -143,7 +143,7 @@ func TestMediaRegistrationIsReadOnlyOnOccupiedTape(t *testing.T) {
 	d.Filemark()
 	pos, _ := d.Position()
 	spy := &observedTape{Device: d}
-	if _, e := RegisterMedia(s, spy, "existing", nil, true, true); e != nil {
+	if _, e := registerTestMember(s, spy, "existing", nil, true, true); e != nil {
 		t.Fatal(e)
 	}
 	after, _ := d.Position()
@@ -152,7 +152,7 @@ func TestMediaRegistrationIsReadOnlyOnOccupiedTape(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(root, "file"), []byte("data"), 0600)
 	StageAdd(context.Background(), s, root, nil, nil)
-	if _, e := StagePlan(context.Background(), s, "archive", 1, false, nil); e != nil {
+	if _, e := StagePlan(context.Background(), s, "archive", "", false, nil); e != nil {
 		t.Fatal(e)
 	}
 	if _, _, e := StageWrite(context.Background(), s, spy, nil, WriteOptions{Memory: 8 << 20}); e == nil {
@@ -169,11 +169,11 @@ func TestStagingSelectionPlanAndReplicaLifecycle(t *testing.T) {
 	if _, e := StageAdd(context.Background(), s, root, []string{"."}, nil); e != nil {
 		t.Fatal(e)
 	}
-	first, e := StagePlan(context.Background(), s, "first", 2, false, nil)
+	first, e := StagePlan(context.Background(), s, "first", "", false, nil)
 	if e != nil {
 		t.Fatal(e)
 	}
-	same, e := StagePlan(context.Background(), s, "", 0, false, nil)
+	same, e := StagePlan(context.Background(), s, "", "", false, nil)
 	if e != nil || same.ID != first.ID {
 		t.Fatal("plan is not stable", e)
 	}
@@ -195,14 +195,14 @@ func TestStagingSelectionPlanAndReplicaLifecycle(t *testing.T) {
 	if _, _, e := StageWrite(context.Background(), s, d, nil, WriteOptions{Memory: 8 << 20}); e == nil {
 		t.Fatal("unplanned selection written")
 	}
-	m, e := StagePlan(context.Background(), s, "final", 2, false, nil)
+	m, e := StagePlan(context.Background(), s, "final", "", false, nil)
 	if e != nil {
 		t.Fatal(e)
 	}
 	if m.Files != len(files)-1 {
 		t.Fatal(m.Files)
 	}
-	if _, e = RegisterMedia(s, d, "one", nil, true, true); e != nil {
+	if _, e = registerTestMember(s, d, "one", nil, true, true); e != nil {
 		t.Fatal(e)
 	}
 	id, _, e := StageWrite(context.Background(), s, d, nil, WriteOptions{Memory: 8 << 20})
@@ -210,36 +210,19 @@ func TestStagingSelectionPlanAndReplicaLifecycle(t *testing.T) {
 		t.Fatal(id, e)
 	}
 	st, _ = LoadStage(s)
-	if st.Plan != id {
-		t.Fatal("stage cleared before required copies existed")
+	if len(st.Files) != 0 || st.Plan != "" {
+		t.Fatal("stage did not clear after a complete batch")
 	}
 	pos, _ := d.Position()
 	if _, _, e = StageWrite(context.Background(), s, d, nil, WriteOptions{Memory: 8 << 20}); e == nil {
-		t.Fatal("duplicate same-tape copy allowed")
+		t.Fatal("empty stage written")
 	}
 	after, _ := d.Position()
-	if after != pos {
-		t.Fatal("duplicate attempt moved tape")
-	}
-	name := filepath.Join(t.TempDir(), "second.tape")
-	media.CreateSim(name, 8<<30, false)
-	other, e := media.OpenSim(name, true)
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer other.Close()
-	if _, e = RegisterMedia(s, other, "two", nil, true, true); e != nil {
-		t.Fatal(e)
-	}
-	if _, _, e = StageWrite(context.Background(), s, other, nil, WriteOptions{Memory: 8 << 20}); e != nil {
-		t.Fatal(e)
-	}
-	st, _ = LoadStage(s)
-	if len(st.Files) != 0 || st.Plan != "" {
-		t.Fatal("committed staging area was not cleared")
+	if pos != after {
+		t.Fatal("empty stage moved tape")
 	}
 	status, e := BatchStatus(s, m)
-	if e != nil || status.Committed != 2 || !status.Covered {
+	if e != nil || status.Committed != 1 || !status.Covered {
 		t.Fatal(status, e)
 	}
 }
@@ -248,7 +231,7 @@ func TestStagingRejectsChangedAliasBeforeTapeIO(t *testing.T) {
 	s, d, root := setup(t)
 	makeSource(t, root)
 	StageAdd(context.Background(), s, root, nil, nil)
-	if _, e := StagePlan(context.Background(), s, "test", 1, false, nil); e != nil {
+	if _, e := StagePlan(context.Background(), s, "test", "", false, nil); e != nil {
 		t.Fatal(e)
 	}
 	os.WriteFile(filepath.Join(root, "tree/large.bin"), []byte("changed alias"), 0600)
@@ -279,10 +262,10 @@ func TestStageAddRefreshAndWriterFailure(t *testing.T) {
 	if len(st.Files) != 1 {
 		t.Fatal("deleted path remained staged", st.Files)
 	}
-	if _, e := StagePlan(context.Background(), s, "test", 1, false, nil); e != nil {
+	if _, e := StagePlan(context.Background(), s, "test", "", false, nil); e != nil {
 		t.Fatal(e)
 	}
-	RegisterMedia(s, d, "test", nil, true, true)
+	registerTestMember(s, d, "test", nil, true, true)
 	if _, _, e := StageWrite(context.Background(), s, &failDevice{Device: d, failAt: 2}, nil, WriteOptions{Memory: 8 << 20}); e == nil {
 		t.Fatal("injected failure ignored")
 	}
@@ -290,11 +273,11 @@ func TestStageAddRefreshAndWriterFailure(t *testing.T) {
 	if len(st.Files) != 1 || st.Plan == "" {
 		t.Fatal("failure discarded plan")
 	}
-	if n, e := StageRemove(s, []string{"."}); e != nil || n != 1 {
-		t.Fatal(n, e)
+	if _, e := StageRemove(s, []string{"."}); e == nil {
+		t.Fatal("unfinished image/tape plan was discarded")
 	}
 	st, _ = LoadStage(s)
-	if st.Source != "" {
-		t.Fatal("clear did not reset source root")
+	if st.Plan == "" {
+		t.Fatal("failed plan identity was lost")
 	}
 }

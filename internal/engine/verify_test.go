@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/thezzisu/taper/internal/catalog"
@@ -17,7 +16,7 @@ func verificationFixture(t *testing.T) (*catalog.Store, *media.Sim, []string) {
 	t.Helper()
 	s, d, root := setup(t)
 	makeSource(t, root)
-	if _, err := RegisterMedia(s, d, "verify", nil, true, false); err != nil {
+	if _, err := registerTestMember(s, d, "verify", nil, true, false); err != nil {
 		t.Fatal(err)
 	}
 	var ids []string
@@ -31,7 +30,21 @@ func verificationFixture(t *testing.T) (*catalog.Store, *media.Sim, []string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = Save(s, m); err != nil {
+		if i == 2 {
+			r, e := ResolveReplicaSet(s, "")
+			if e != nil {
+				t.Fatal(e)
+			}
+			m.ReplicaID = r.ID
+			if e = assignBatch(s, &m); e != nil {
+				t.Fatal(e)
+			}
+			m.BeginPos++
+			m.DataPos++
+			m.CommitPos++
+			m.EndPos++
+		}
+		if err = saveTestManifest(s, &m); err != nil {
 			t.Fatal(err)
 		}
 		if _, err = WriteArchive(context.Background(), s, d, m, nil, WriteOptions{Memory: 8 << 20, Zstd: i == 1}); err != nil {
@@ -59,14 +72,14 @@ func TestVerifySelectedRangesAndEOD(t *testing.T) {
 				selected, wantArchives = []string{ids[2], ids[2]}, 1
 			}
 			spy := &observedTape{Device: d}
-			p, err := PlanVerification(s, spy, selected)
+			p, err := PlanVerification(s, spy, testRange(selected))
 			if err != nil || len(p.Archives) != wantArchives || p.CheckEOD != wantEOD {
 				t.Fatal(p, err)
 			}
 			if spy.reads+spy.locates+spy.keys+spy.writes+spy.marks != 0 {
 				t.Fatal("planning touched tape records", spy)
 			}
-			result, err := VerifyTape(context.Background(), s, spy, p, nil, ReadOptions{Memory: 8 << 20})
+			result, err := VerifyTape(context.Background(), s, spy, p, nil, ReadOptions{Memory: 8 << 20, HardwareCompression: testCompression()})
 			if err != nil || !result.Complete || result.Archives != wantArchives || result.EODChecked != wantEOD || result.ReachedEOD != wantEOD {
 				t.Fatal(result, err)
 			}
@@ -90,9 +103,9 @@ func TestVerifySelectedRangesAndEOD(t *testing.T) {
 
 func TestVerifyRejectsInvalidCatalogScopeBeforeMoving(t *testing.T) {
 	s, d, ids := verificationFixture(t)
-	for _, selected := range [][]string{{"bad"}, {ids[2], ids[0]}, {format.NewID().String()}, {ids[0], ids[1], ids[2]}} {
+	for _, selected := range [][]string{{"bad"}, {ids[2], ids[0]}, {format.NewID().String()}} {
 		spy := &observedTape{Device: d}
-		if _, err := PlanVerification(s, spy, selected); err == nil {
+		if _, err := PlanVerification(s, spy, testRange(selected)); err == nil {
 			t.Fatal("invalid selection admitted", selected)
 		}
 		if spy.reads+spy.locates+spy.keys != 0 {
@@ -108,20 +121,20 @@ func TestVerifyRejectsInvalidCatalogScopeBeforeMoving(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer other.Close()
-	if _, err = RegisterMedia(s, other, "other", nil, true, false); err != nil {
+	if _, err = registerTestMember(s, other, "other", nil, true, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = prepareMedia(s, other, nil); err != nil {
 		t.Fatal(err)
 	}
 	spy := &observedTape{Device: other}
-	if _, err = PlanVerification(s, spy, []string{ids[0]}); err == nil || !strings.Contains(err.Error(), "no committed replica") {
+	if _, err = PlanVerification(s, spy, ids[0]); err == nil {
 		t.Fatal("wrong cartridge admitted", err)
 	}
 	if spy.reads+spy.locates+spy.keys != 0 {
 		t.Fatal("wrong cartridge read", spy)
 	}
-	p, err := PlanVerification(s, d, ids[1:])
+	p, err := PlanVerification(s, d, testRange(ids[1:]))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +142,7 @@ func TestVerifyRejectsInvalidCatalogScopeBeforeMoving(t *testing.T) {
 		t.Fatal(err)
 	}
 	spy = &observedTape{Device: d}
-	if _, err = VerifyTape(context.Background(), s, spy, p, nil, ReadOptions{Memory: 8 << 20}); err == nil {
+	if _, err = VerifyTape(context.Background(), s, spy, p, nil, ReadOptions{Memory: 8 << 20, HardwareCompression: testCompression()}); err == nil {
 		t.Fatal("changed scope admitted")
 	}
 	if spy.reads+spy.locates+spy.keys != 0 {
@@ -169,7 +182,7 @@ func TestVerifyRejectsCorruptionBoundariesAndTrailingRecords(t *testing.T) {
 	for _, failure := range []string{"corrupt", "gap", "early-eod", "trailing-record", "trailing-filemark", "cancelled"} {
 		t.Run(failure, func(t *testing.T) {
 			s, d, ids := verificationFixture(t)
-			p, e := PlanVerification(s, d, ids[1:])
+			p, e := PlanVerification(s, d, testRange(ids[1:]))
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -196,7 +209,7 @@ func TestVerifyRejectsCorruptionBoundariesAndTrailingRecords(t *testing.T) {
 				cancel()
 			}
 			spy := &observedTape{Device: device}
-			result, e := VerifyTape(ctx, s, spy, p, nil, ReadOptions{Memory: 8 << 20})
+			result, e := VerifyTape(ctx, s, spy, p, nil, ReadOptions{Memory: 8 << 20, HardwareCompression: testCompression()})
 			if e == nil || result.Complete || result.ReachedEOD {
 				t.Fatal("invalid stream accepted", result, e)
 			}

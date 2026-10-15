@@ -1,9 +1,10 @@
 # taper
 
 Packed archives for manually loaded LTO tapes, with an encrypted SQLite catalog
-that stays searchable while the tapes are offline. Small files share 1 MiB
-records. Adjacent path/length metadata allows rebuilding the catalog by reading
-the tape sequentially.
+that stays searchable while the tapes are offline. Replica sets share one immutable stream across physical
+cartridges and sparse image caches. Small files share
+1 MiB records, and complete batches can be prepared once then synchronized to
+multiple cartridges.
 
 The device backend is Linux-only and uses SG_IO directly in the current process.
 The current hardware qualification is for LTO-6. Select the drive explicitly when
@@ -38,16 +39,17 @@ interface and cannot be passed to this backend.
 taper catalog init
 taper key generate --name TAPE001 --key-file /private/TAPE001.key --keycard /private/TAPE001.keycard
 # Save the recovery card separately before registering the key.
-taper tape register --device /dev/sg1 --name TAPE001 --key-file /private/TAPE001.key
+taper replica create TAPE001 --key-file /private/TAPE001.key
+taper replica add TAPE001 --device /dev/sg1 --key-file /private/TAPE001.key
 
 taper stage add --source /data/snapshot --rules /private/rules.json .
 taper stage ls
 taper stage rm unwanted/path
-taper stage plan --name photos
+taper stage plan --replica TAPE001 --name photos
 # If plan reports a locked container, enter its password without echoing it.
 taper stage unlock --remember 'backup.7z'
 # This example allocates a 1 GiB write pool. Size it for the measured source rate.
-taper stage write --device /dev/sg1 --memory 1073741824
+taper stage write --device /dev/sg1 --memory 1073741824 --yes
 
 taper archive ls
 taper archive browse --archive ARCHIVE_ID
@@ -67,12 +69,10 @@ progress goes to stderr. Redirected output contains no terminal styling.
 The catalog uses schema version 1. Opening another version fails; taper never
 upgrades it or creates missing tables implicitly.
 
-Hardware compression defaults to on when registering a tape; use
-`tape register --hardware-compression=false ...` to save an off preference.
-Registration saves that choice in the catalog. Each write applies it to the drive
-and checks the resulting setting before writing records. Optional software
-compression (`stage write --zstd`) defaults to off and is independent of hardware
-compression. Capacity planning always assumes no compression gain.
+Hardware compression defaults to on when creating a replica set; use
+`replica create NAME --hardware-compression=false` to disable it. Each physical
+write applies the set preference. Optional software zstd defaults off and remains
+independent. Planning assumes no hardware compression gain.
 
 ## Staging and tape choice
 
@@ -80,12 +80,10 @@ One catalog has one staging area with one source root. `stage add` records files
 adding a directory again refreshes that selection. `stage rm` changes the
 selection, and `stage rm .` clears it. Neither deletes source files.
 
-`stage plan` hashes the selection, deduplicates identical contents within the
-archive, recursively indexes user-created archive files, computes exact
-uncompressed encoded bytes, and recommends registered tapes using
-saved capacity and health information. It proposes a new tape when none fit.
-It does not move, split, or automatically write the data. Repeating a current
-plan reuses it; interrupted hashing can resume from saved checkpoints.
+`stage plan` binds the selection to a replica set, hashes and deduplicates it,
+indexes user archives and checks the smallest member budget after accounting
+for missing physical replicas. It assigns an immutable stream ID and batch positions.
+Repeating a current plan reuses it; interrupted hashing resumes from checkpoints.
 
 Deep indexing follows packaging layers: `backup.zip!/game.rar!/OST.zip!/track.flac`.
 Only conventional archive suffixes enter this recursion. Programs (including
@@ -98,11 +96,12 @@ If an archive is encrypted, planning records its visible state and continues.
 Use `stage unlock PATH` with a hidden prompt or `--password-file`; add
 `--remember` only when the password should be retained in the encrypted catalog.
 
-`stage write` appends a replica to the explicitly supplied drive. A replica is
-committed after its COMMIT record and synchronous filemark succeed. With
-`stage plan --copies N`, the stage stays until N distinct tapes have committed
-copies. Once those copies exist, the stage clears. `archive ls` shows committed
-archives; a committed copy is not necessarily verified.
+`stage write` accepts `--image`, `--device`, or both. With both, it completes the
+image first and streams those same records to tape. A successful complete batch
+clears the stage immediately. Insert another member and use `tape sync --from`
+to copy its missing suffix. `tape sync --to` fills a sparse image without changing
+SQLite. `--prune` releases only image batches committed on every member. A durable
+physical replica is distinct from one that has been read-verified.
 
 Rules contain explicit include/exclude patterns. There are no built-in trash,
 software, or course-material exclusions:
@@ -122,21 +121,22 @@ and process supervision remain external operations.
 Use `stage ls` for selections that have not been written. `archive browse --tui`
 currently opens a small numbered terminal menu for one archive; it is not a full
 backup interface. Command names have one spelling, with no aliases.
-There is no command to extract archived files yet. `tape reindex` rebuilds the catalog,
-not a restored filesystem tree.
+`replica mount` exposes original archived files through read-only FUSE, from an
+image, a device with an image, or a device with a temporary sparse cache.
+`tape reindex` rebuilds catalog metadata in one full tape pass.
 
-`tape verify` checks a whole tape by default. Give one full archive ID to check
-one archive, or two IDs to check the inclusive contiguous range between them.
+`tape verify` checks a whole tape by default. Use `--archive ID` for one archive or `--archive FIRST-LAST` for an inclusive
+contiguous range; unique hex prefixes of at least six characters are accepted.
 The IDs must have unique committed replicas on the loaded tape. The preview
 lists every selected archive, its logical object range, boundary checks and EOD
 check. It prompts once; `--yes` (`-y`) skips the prompt and `--dry-run` (`-n`)
 shows the plan without moving the tape. Non-interactive execution needs `--yes`.
 
 ```sh
-taper tape verify --device /dev/sg1 --dry-run FIRST_ID LAST_ID
-GOMEMLIMIT=10GiB taper tape verify --device /dev/sg1 --memory 8589934592 --yes FIRST_ID LAST_ID
+taper tape verify --device /dev/sg1 --dry-run --archive FIRST_ID-LAST_ID
+GOMEMLIMIT=10GiB taper tape verify --device /dev/sg1 --memory 8589934592 --yes --archive FIRST_ID-LAST_ID
 # Exact scope and results for scripts:
-taper tape verify --device /dev/sg1 --dry-run --json FIRST_ID LAST_ID
+taper tape verify --device /dev/sg1 --dry-run --json --archive FIRST_ID-LAST_ID
 ```
 
 Each verification uses one locate and one forward read. The reader is bounded
@@ -172,3 +172,4 @@ change the latter, and recovering an encrypted tape without its key is impossibl
 - [Tape format v1](docs/FORMAT.md)
 - [Validation and measured limits](docs/VALIDATION.md)
 - [Proposed CLI/TUI design](docs/CLI-DESIGN.md)
+- [Replica sets, sparse images and FUSE](docs/IMAGES.md)

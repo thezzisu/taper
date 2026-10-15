@@ -14,10 +14,8 @@ taper backend. Drive identity and cartridge identity are different: MAM serial,
 barcode and taper media ID describe the loaded cartridge.
 
 `tape probe` queries capabilities, cartridge capacity and TapeAlert flags.
-`tape register` registers that cartridge in SQLite using device/MAM queries. These
-commands do not read tape records, seek, erase, or write a tape label. Registration
-also saves the hardware compression preference (default on) without changing the
-drive. It can succeed on occupied media; the first write refuses an uninitialized
+`replica add` registers that cartridge in SQLite using device/MAM queries. These
+commands do not read tape records, seek, erase, or write a tape label. Members inherit the replica set's hardware-compression preference without changing the drive. It can succeed on occupied media; the first write refuses an uninitialized
 tape unless its empty check succeeds.
 
 On the first write to a new tape, taper performs that empty check at BOT, writes
@@ -44,10 +42,11 @@ writes. Taper does not require a read-only mount or create a snapshot. Source
 identity, metadata and streaming hashes detect changes; the operator supplies a
 stable source.
 
-Recommendations use the last saved cartridge capacity/health sample. They favor
-fitting tapes with less remaining space and exclude tapes already holding that
-archive's replica. Writing checks the loaded medium again. Budgets assume
-no compression gain and reserve the larger of 1% of the native limit or 2 GiB.
+Replica-set budgets use the smallest member's saved capacity/health budget after
+subtracting every committed batch that member still lacks. Missing measurements,
+unhealthy members and unresolved tails produce zero budget. Physical writes
+recheck the loaded cartridge. Budgets assume no hardware compression gain and
+reserve the larger of 1% of the native limit or 2 GiB.
 
 `reported_total_bytes` and `reported_remaining_bytes` are the device's exact
 integer counters converted from MiB (2^20 bytes). Raw MAM and READ POSITION
@@ -89,9 +88,9 @@ retain the command, deferred-error flag, information field and transfer residual
 for diagnosis. An EOM response is not automatically retried or treated as a
 successful archive commit.
 
-One replica never spans tapes. `--copies N` means N committed copies on distinct
-tapes. A failed write retains the stage; successful completion clears it only
-when the required number of copies exists. There is no automatic retry or split.
+A physical replica never spans tapes. A complete batch can be synchronized to
+any number of registered members from one image. Failed writes retain a blocked
+tail; there is no automatic retry, split or overwrite.
 
 ## Continuous I/O
 
@@ -124,9 +123,8 @@ tape motion. Native budgets continue to assume no compression gain.
 `tape verify` and `tape reindex` share the bounded record pool, decoder and hash
 parser. Verification plans from the catalog before moving the tape. It checks
 cartridge identity, unique archive-to-tape associations, ordered bounds, every
-intervening committed archive and consistent positions. No IDs selects the whole
-tape; one ID selects one archive; two IDs select the inclusive range. Same IDs
-select one archive. Reversed IDs, missing positions, overlaps or unresolved
+intervening committed archive and consistent positions. An omitted `--archive` selects the whole tape. `--archive ID` selects one archive;
+`--archive FIRST-LAST` selects an inclusive range, with unique prefixes accepted. Reversed IDs, missing positions, overlaps or unresolved
 writes intersecting the range are rejected.
 
 The English preview displays the tape label, cartridge serial, device and full
@@ -154,7 +152,7 @@ past a damaged one. Catalog writes follow streaming, never per record.
 The measured read setting on the qualification host is:
 
 ```sh
-GOMEMLIMIT=10GiB taper tape verify --device /dev/sg1 --memory 8589934592 --yes FIRST_ID LAST_ID
+GOMEMLIMIT=10GiB taper tape verify --device /dev/sg1 --memory 8589934592 --yes --archive FIRST_ID-LAST_ID
 ```
 
 The runtime limit is soft. Do not choose a 64 GiB read pool merely because a

@@ -4,6 +4,14 @@ All tape writes are single variable-length logical records. Logical object
 addresses include filemarks; hardware-compressed byte positions are never used.
 Only partition zero is supported. Maximum record length is 1,048,576 bytes.
 
+A record is a logical data block, not an entire archive. One archive replica
+forms a tape file: BEGIN, consecutive DATA records, COMMIT, then a native
+filemark. File contents share DATA blocks without per-file alignment. Individual
+DATA blocks remain directly addressable by LOCATE within this tape file.
+
+[The image and FUSE design](IMAGES.md) preserves these original record bytes and
+addresses. It does not change this tape format.
+
 ## Record header (64 bytes)
 
 Integers are little-endian. Reserved bytes must be zero when writing.
@@ -57,8 +65,9 @@ selection rules or exclusion history. Those fields are catalog-only. The desired
 hardware compression setting is also catalog-only; drive-compressed records are
 self-describing and need no such preference for decompression. Reindexing
 can recover the stored paths and contents but cannot reconstruct those fields.
-The recovered write preference is NULL until explicitly set with `tape register`;
-it is never inferred from the drive's current mode or a new-tape default.
+When recovering an unknown replica set, reindex requires an explicit future
+hardware-compression preference; it never guesses from the drive's current mode.
+
 
 ## Controls and durable boundary
 
@@ -68,7 +77,10 @@ Cartridge user-text MAM additionally holds `taper1:` followed by the JSON array
 `[media_id,label,key_id]`; no file paths or secrets are stored in MAM.
 
 BEGIN and COMMIT contain `batch`, `replica`, `media`, `name`, `logical`, `files`,
-`blocks`, and `digest`. BEGIN has blocks=0. COMMIT repeats the fields with the
+`blocks`, and `digest`. `media` identifies the replica set; `replica` is the
+batch's immutable stream ID. These controls and DATA are identical on all
+members. `MEDIA.id` and MAM's first field also identify the set, while their
+label and hardware serial describe the individual cartridge. BEGIN has blocks=0. COMMIT repeats the fields with the
 actual DATA record count, followed by one non-immediate filemark. Files are
 recoverable without a catalog by sequentially decoding the group stream.
 

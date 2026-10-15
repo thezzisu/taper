@@ -94,16 +94,32 @@ func AppendFrame(dst []byte, f Frame, enc *zstd.Encoder) ([]byte, error) {
 	return dst, nil
 }
 
-func DecodeFrame(src []byte, dec *zstd.Decoder) (f Frame, err error) {
+// ValidateHeader bounds a record before decoding or publishing image coverage.
+func ValidateHeader(src []byte) error {
 	if len(src) < HeaderSize || len(src) > BlockSize || !bytes.Equal(src[:8], magic) || binary.LittleEndian.Uint16(src[8:]) != 1 {
-		return f, errors.New("invalid frame header")
+		return errors.New("invalid frame header")
 	}
-	h := append([]byte(nil), src[:HeaderSize]...)
+	var h [HeaderSize]byte
+	copy(h[:], src[:HeaderSize])
 	want := binary.LittleEndian.Uint32(h[12:])
 	clear(h[12:16])
-	if crc32.Checksum(h, CRC) != want {
-		return f, errors.New("frame header CRC mismatch")
+	if crc32.Checksum(h[:], CRC) != want {
+		return errors.New("frame header CRC mismatch")
 	}
+	if binary.LittleEndian.Uint32(src[40:]) > PayloadSize || int(binary.LittleEndian.Uint32(src[44:])) != len(src)-HeaderSize {
+		return errors.New("invalid frame lengths")
+	}
+	if src[10] < Media || src[10] > Commit || src[11] > 1 {
+		return errors.New("invalid frame kind or codec")
+	}
+	return nil
+}
+
+func DecodeFrame(src []byte, dec *zstd.Decoder) (f Frame, err error) {
+	if err = ValidateHeader(src); err != nil {
+		return
+	}
+
 	f.Kind = src[10]
 	if f.Kind < Media || f.Kind > Commit {
 		return f, errors.New("unknown frame kind")

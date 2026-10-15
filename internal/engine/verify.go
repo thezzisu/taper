@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"reflect"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 
 type VerifyArchive struct {
 	ID      string  `json:"id"`
+	Stream  string  `json:"stream_id"`
 	Name    string  `json:"name"`
 	Digest  string  `json:"digest"`
 	Logical int64   `json:"logical_bytes"`
@@ -27,6 +27,7 @@ type VerifyArchive struct {
 
 type VerifyPlan struct {
 	Media    string          `json:"media"`
+	MediaID  string          `json:"-"`
 	Label    string          `json:"label"`
 	Serial   string          `json:"serial"`
 	KeyID    string          `json:"key_id"`
@@ -39,102 +40,69 @@ type VerifyPlan struct {
 
 // PlanVerification uses catalog and MAM queries only. It never reads records,
 // locates, changes encryption settings, or writes catalog observations.
-func PlanVerification(s *catalog.Store, d media.Device, ids []string) (p VerifyPlan, err error) {
-	if len(ids) > 2 {
-		return p, errors.New("provide no IDs, one archive ID, or FIRST_ID LAST_ID")
-	}
-	selected := make([]string, len(ids))
-	for i, id := range ids {
-		parsed, e := format.ParseID(id)
-		if e != nil {
-			return p, fmt.Errorf("invalid archive ID %q: %w", id, e)
-		}
-		selected[i] = parsed.String()
-	}
+func PlanVerification(s *catalog.Store, d media.Device, spec string) (p VerifyPlan, err error) {
 	l, err := ReadLabel(d)
 	if err != nil {
 		return
 	}
-	p.Media, p.Serial, p.KeyID = l.ID, l.Serial, l.KeyID
-	var serial, keyID string
-	if err = s.DB.QueryRow("SELECT label,serial,key_id FROM media WHERE id=?", l.ID).Scan(&p.Label, &serial, &keyID); err != nil {
-		return p, fmt.Errorf("loaded tape is not registered in this catalog: %w", err)
+	member, err := MemberForSerial(s, l.Serial)
+	if err != nil {
+		return
 	}
-	if serial != l.Serial || keyID != l.KeyID {
+	set, err := ResolveReplicaSet(s, member.Replica)
+	if err != nil {
+		return
+	}
+	if l.ID != set.ID || l.KeyID != set.KeyID {
 		return p, errors.New("loaded tape identity differs from catalog")
 	}
-	rows, err := s.DB.Query(`SELECT b.id,b.name,b.digest,b.logical_bytes,b.files,r.id,r.begin_pos,r.data_pos,r.commit_pos,r.blocks,r.confirmed_bytes,r.confirmed_records,r.end_pos,r.verified IS NOT NULL
-FROM replicas r JOIN batches b ON b.id=r.batch_id WHERE r.media_id=? AND r.state='committed' AND b.state='committed' ORDER BY r.begin_pos`, p.Media)
+	p.Media, p.MediaID, p.Label, p.Serial, p.KeyID = l.ID, member.ID, member.Label, l.Serial, l.KeyID
+	all, err := ListBatches(s, l.ID)
 	if err != nil {
 		return
 	}
-	var all []VerifyArchive
-	seen := map[string]bool{}
-	end := uint64(2) // public label and its filemark
-	for rows.Next() {
-		var a VerifyArchive
-		r := &a.Replica
-		if err = rows.Scan(&a.ID, &a.Name, &a.Digest, &a.Logical, &a.Files, &r.ID, &r.Begin, &r.Data, &r.Commit, &r.Blocks, &r.ConfirmedBytes, &r.ConfirmedRecords, &r.End, &r.Verified); err != nil {
-			break
-		}
-		r.Media, r.Label = p.Media, p.Label
-		if seen[a.ID] {
-			err = fmt.Errorf("archive %s has multiple committed replicas on this tape", a.ID)
-			break
-		}
-		seen[a.ID] = true
-		if a.Logical <= 0 || a.Files <= 0 || r.Begin < end || r.End == nil || *r.End >= math.MaxInt64 || r.Data != r.Begin+1 || r.Blocks != uint64(1+(a.Logical-1)/format.PayloadSize) || r.Commit != r.Data+r.Blocks || *r.End != r.Commit+2 {
-			err = fmt.Errorf("archive %s has missing, overlapping or inconsistent object positions", a.ID)
-			break
-		}
-		if r.ConfirmedRecords != nil && *r.ConfirmedRecords != int64(r.Blocks)+2 || r.ConfirmedBytes != nil && *r.ConfirmedBytes <= 0 {
-			err = fmt.Errorf("archive %s has inconsistent record counters", a.ID)
-			break
-		}
-		end = *r.End
-		all = append(all, a)
-	}
-	if err == nil {
-		err = rows.Err()
-	}
-	rows.Close()
+	prefix, err := MemberPrefix(s, member.ID, all)
 	if err != nil {
 		return
 	}
-	p.Whole, p.CheckEOD = len(selected) == 0, true
-	p.Archives, p.End = all, end
-	if !p.Whole {
-		indexes := make([]int, len(selected))
-		for i, id := range selected {
-			indexes[i] = -1
-			for j, a := range all {
-				if a.ID == id {
-					indexes[i] = j
-					break
-				}
-			}
-			if indexes[i] < 0 {
-				return p, fmt.Errorf("archive %s has no committed replica on tape %s", id, p.Label)
-			}
+	all = all[:prefix]
+	selection, err := ParseArchiveRange(spec, all)
+	if err != nil {
+		return
+	}
+	p.Whole = spec == ""
+	p.End = 2
+	p.CheckEOD = true
+	for _, b := range selection {
+		var r Replica
+		r.Media, r.Label = member.ID, member.Label
+		err = s.DB.QueryRow("SELECT id,begin_pos,data_pos,commit_pos,blocks,confirmed_bytes,confirmed_records,end_pos,verified IS NOT NULL FROM replicas WHERE batch_id=? AND media_id=? AND state='committed'", b.ID, member.ID).Scan(&r.ID, &r.Begin, &r.Data, &r.Commit, &r.Blocks, &r.ConfirmedBytes, &r.ConfirmedRecords, &r.End, &r.Verified)
+		if err != nil {
+			return
 		}
-		first, last := indexes[0], indexes[len(indexes)-1]
-		if first > last {
-			return p, errors.New("FIRST_ID follows LAST_ID on this tape")
+		if r.ConfirmedBytes != nil && b.EncodedBytes != nil && *r.ConfirmedBytes != *b.EncodedBytes {
+			return p, errors.New("replica encoded count differs from stream")
 		}
-		p.Archives = all[first : last+1]
-		p.Start, p.End = all[first].Replica.Begin, *all[last].Replica.End
-		p.CheckEOD = last == len(all)-1
+		p.Archives = append(p.Archives, VerifyArchive{ID: b.ID, Stream: b.StreamID, Name: b.Name, Digest: b.Digest, Logical: b.Logical, Files: b.Files, Replica: r})
+	}
+	if len(selection) > 0 {
+		p.End = selection[len(selection)-1].EndPos
+		p.CheckEOD = selection[len(selection)-1].Seq == prefix-1
+		if !p.Whole {
+			p.Start = selection[0].BeginPos
+		}
 	}
 	upper := p.End
 	if p.CheckEOD {
 		upper++
 	}
 	var incomplete int
-	if err = s.DB.QueryRow(`SELECT COUNT(*) FROM replicas WHERE media_id=? AND state IN ('writing','failed') AND begin_pos<? AND (end_pos IS NULL OR end_pos>=?)`, p.Media, upper, p.Start).Scan(&incomplete); err != nil {
+	err = s.DB.QueryRow("SELECT COUNT(*) FROM replicas WHERE media_id=? AND state IN ('writing','failed') AND begin_pos<? AND (end_pos IS NULL OR end_pos>=?)", member.ID, upper, p.Start).Scan(&incomplete)
+	if err != nil {
 		return
 	}
 	if incomplete > 0 {
-		return p, errors.New("verification range intersects an unresolved write; resolve its tail first")
+		return p, errors.New("verification scope intersects an unresolved write")
 	}
 	return
 }
@@ -175,14 +143,14 @@ func VerifyTape(ctx context.Context, s *catalog.Store, d media.Device, plan Veri
 	if _, err = readPoolCount(o.Memory); err != nil {
 		return
 	}
-	var ids []string
+	spec := ""
 	if !plan.Whole {
 		if len(plan.Archives) == 0 {
 			return out, errors.New("empty verification range")
 		}
-		ids = []string{plan.Archives[0].ID, plan.Archives[len(plan.Archives)-1].ID}
+		spec = plan.Archives[0].ID + "-" + plan.Archives[len(plan.Archives)-1].ID
 	}
-	current, err := PlanVerification(s, d, ids)
+	current, err := PlanVerification(s, d, spec)
 	if err != nil {
 		return
 	}
@@ -270,7 +238,7 @@ func VerifyTape(ctx context.Context, s *catalog.Store, d media.Device, plan Veri
 		if e = json.Unmarshal(f.Payload, &begin); e != nil {
 			return out, e
 		}
-		want := Boundary{Batch: expected.ID, Replica: expected.Replica.ID, Media: plan.Media, Name: expected.Name, Logical: expected.Logical, Files: expected.Files, Digest: expected.Digest}
+		want := Boundary{Batch: expected.ID, Replica: expected.Stream, Media: plan.Media, Name: expected.Name, Logical: expected.Logical, Files: expected.Files, Digest: expected.Digest}
 		if f.Kind != format.Begin || f.Batch.String() != expected.ID || begin != want {
 			return out, fmt.Errorf("archive %s BEGIN differs from catalog", expected.ID)
 		}
@@ -286,7 +254,7 @@ func VerifyTape(ctx context.Context, s *catalog.Store, d media.Device, plan Veri
 		if commit != rep.Commit || end.Blocks != rep.Blocks || r.position != *rep.End || rep.ConfirmedBytes != nil && n != *rep.ConfirmedBytes {
 			return out, fmt.Errorf("archive %s recorded layout or byte count differs", expected.ID)
 		}
-		checked = append(checked, scannedArchive{begin: begin, end: end, start: rep.Begin, data: rep.Data, commit: commit, bytes: n, finish: r.position})
+		checked = append(checked, scannedArchive{begin: begin, end: end, start: rep.Begin, data: rep.Data, commit: commit, bytes: n, finish: r.position, replicaID: rep.ID})
 		out.Archives++
 	}
 	if r.position != plan.End {
@@ -321,7 +289,7 @@ func VerifyTape(ctx context.Context, s *catalog.Store, d media.Device, plan Veri
 	defer tx.Rollback()
 	for _, a := range checked {
 		result, e := tx.Exec(`UPDATE replicas SET verified=?,confirmed_bytes=?,confirmed_records=?,end_pos=? WHERE id=? AND batch_id=? AND media_id=? AND begin_pos=? AND data_pos=? AND commit_pos=? AND blocks=? AND state='committed'
-AND (confirmed_bytes IS NULL OR confirmed_bytes=?) AND (confirmed_records IS NULL OR confirmed_records=?) AND (end_pos IS NULL OR end_pos=?)`, time.Now().UTC().Format(time.RFC3339), a.bytes, a.end.Blocks+2, a.finish, a.begin.Replica, a.begin.Batch, plan.Media, a.start, a.data, a.commit, a.end.Blocks, a.bytes, a.end.Blocks+2, a.finish)
+			AND (confirmed_bytes IS NULL OR confirmed_bytes=?) AND (confirmed_records IS NULL OR confirmed_records=?) AND (end_pos IS NULL OR end_pos=?)`, time.Now().UTC().Format(time.RFC3339), a.bytes, a.end.Blocks+2, a.finish, a.replicaID, a.begin.Batch, plan.MediaID, a.start, a.data, a.commit, a.end.Blocks, a.bytes, a.end.Blocks+2, a.finish)
 		if e != nil {
 			return out, e
 		}
@@ -333,7 +301,7 @@ AND (confirmed_bytes IS NULL OR confirmed_bytes=?) AND (confirmed_records IS NUL
 	if err = tx.Commit(); err != nil {
 		return
 	}
-	err = recordMediaInfo(s, plan.Media, info)
+	err = recordMediaInfo(s, plan.MediaID, info)
 	out.Complete = err == nil
 	return
 }

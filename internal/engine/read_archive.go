@@ -73,8 +73,14 @@ func readBatch(ctx context.Context, d *sequentialReader, dec *zstd.Decoder, begi
 	if end != expected || Digest(m.Contents) != m.Digest {
 		return m, end, commitPos, errors.New("commit digest mismatch")
 	}
+	if e = d.accept(b, nil); e != nil {
+		return m, end, commitPos, e
+	}
 	if _, e = d.ReadRecord(); e != media.ErrFilemark {
 		return m, end, commitPos, errors.New("missing durable filemark")
+	}
+	if e = d.accept(nil, media.ErrFilemark); e != nil {
+		return m, end, commitPos, e
 	}
 	return m, end, commitPos, nil
 }

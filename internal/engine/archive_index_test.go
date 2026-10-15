@@ -38,7 +38,7 @@ func TestNestedVolumeFamilies(t *testing.T) {
 	if _, err = StageAdd(ctx, s, root, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	m, err := StagePlan(ctx, s, "volumes", 1, false, nil)
+	m, err := StagePlan(ctx, s, "volumes", "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestMissingVolumeAndVisibleEncryptedHeaders(t *testing.T) {
 			if _, err = StageAdd(ctx, s, root, nil, nil); err != nil {
 				t.Fatal(err)
 			}
-			m, err := StagePlan(ctx, s, "partial", 1, false, nil)
+			m, err := StagePlan(ctx, s, "partial", "", false, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -124,7 +124,7 @@ func TestDuplicateArchiveMemberNames(t *testing.T) {
 	if _, err := StageAdd(ctx, s, root, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	m, err := StagePlan(ctx, s, "duplicates", 1, false, nil)
+	m, err := StagePlan(ctx, s, "duplicates", "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestNestedIndexUnlockAndOfflineCatalog(t *testing.T) {
 	if _, err = StageAdd(ctx, s, root, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	m, err := StagePlan(ctx, s, "nested", 1, false, nil)
+	m, err := StagePlan(ctx, s, "nested", "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,14 +224,14 @@ func TestNestedIndexUnlockAndOfflineCatalog(t *testing.T) {
 	}
 	// Cached planning succeeds without a usable extraction scratch directory.
 	t.Setenv("TMPDIR", filepath.Join(root, "no-such-scratch"))
-	again, err := StagePlan(ctx, s, "", 0, false, nil)
+	again, err := StagePlan(ctx, s, "", "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if again.ID != m.ID || again.Digest != m.Digest || Budget(again) != Budget(m) {
 		t.Fatal("indexing changed the tape layout")
 	}
-	if _, err = RegisterMedia(s, simulated, "TEST", nil, true, false); err != nil {
+	if _, err = registerTestMember(s, simulated, "TEST", nil, true, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = prepareMedia(s, simulated, nil); err != nil {
@@ -243,7 +243,7 @@ func TestNestedIndexUnlockAndOfflineCatalog(t *testing.T) {
 	if _, err = StageAdd(ctx, s, root, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	reused, err := StagePlan(ctx, s, "reused", 1, false, nil)
+	reused, err := StagePlan(ctx, s, "reused", "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestIndexCompressedTarAndSplit7z(t *testing.T) {
 	if _, err = StageAdd(ctx, s, root, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	m, err := StagePlan(ctx, s, "nested", 1, false, nil)
+	m, err := StagePlan(ctx, s, "nested", "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestUnlockDoesNotRememberByDefault(t *testing.T) {
 	if _, err = StageAdd(ctx, s, root, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	m, err := StagePlan(ctx, s, "locked", 1, false, nil)
+	m, err := StagePlan(ctx, s, "locked", "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestArchiveMemberPathCannotEscapeOrCollideWithBoundary(t *testing.T) {
 	if _, err := StageAdd(ctx, s, root, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	m, err := StagePlan(ctx, s, "paths", 1, false, nil)
+	m, err := StagePlan(ctx, s, "paths", "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +395,7 @@ func TestNestedLegacyFilenameBytes(t *testing.T) {
 	if _, err = StageAdd(ctx, s, root, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	m, err := StagePlan(ctx, s, "legacy", 1, false, nil)
+	m, err := StagePlan(ctx, s, "legacy", "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +444,7 @@ func TestUserArchivesStopAtFiles(t *testing.T) {
 	if _, err := StageAdd(ctx, s, root, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	m, err := StagePlan(ctx, s, "user-archives", 1, false, nil)
+	m, err := StagePlan(ctx, s, "user-archives", "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +502,7 @@ func TestArchiveSuffixDoesNotExposeFileInternals(t *testing.T) {
 	if _, err = StageAdd(ctx, s, root, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	m, err := StagePlan(ctx, s, "suffix", 1, false, nil)
+	m, err := StagePlan(ctx, s, "suffix", "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

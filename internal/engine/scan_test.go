@@ -24,7 +24,7 @@ func planSource(ctx context.Context, s *catalog.Store, root, name string) (m Man
 	if _, err = StageAdd(ctx, s, root, nil, nil); err != nil {
 		return
 	}
-	m, err = StagePlan(ctx, s, name, 1, false, func(n int64) { read = n })
+	m, err = StagePlan(ctx, s, name, "", false, func(n int64) { read = n })
 	return
 }
 

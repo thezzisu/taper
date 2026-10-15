@@ -457,3 +457,23 @@ func (s *SG) Close() error {
 	}
 	return ce
 }
+
+// Eject rewinds and unloads once. It deliberately does not issue a filemark or
+// a second positioning command; the drive performs the physical unload.
+func (s *SG) Eject() error {
+	if s.f == nil {
+		return errors.New("device is closed")
+	}
+	if s.managed {
+		if e := s.SetKey(nil); e != nil {
+			return e
+		}
+		s.managed = false
+	}
+	if _, e := s.command([]byte{0x01, 0, 0, 0, 0, 0}, nil, false); e != nil {
+		return e
+	}
+	// LOAD/UNLOAD byte 4: LoEj=1, Load=0 requests an unload.
+	_, e := s.command([]byte{0x1b, 0, 0, 0, 0x02, 0}, nil, false)
+	return e
+}

@@ -42,7 +42,7 @@ func (d *sampleFailureDevice) Info() (media.Info, error) {
 func TestMissingPostWriteSampleDoesNotReuseOldFreeSpace(t *testing.T) {
 	s, d, root := setup(t)
 	makeSource(t, root)
-	l, err := RegisterMedia(s, d, "test", nil, false, false)
+	l, err := registerTestMember(s, d, "test", nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestMissingPostWriteSampleDoesNotReuseOldFreeSpace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = Save(s, m); err != nil {
+	if err = saveTestManifest(s, &m); err != nil {
 		t.Fatal(err)
 	}
 	device := &sampleFailureDevice{Device: d, beforeFailure: func() {
@@ -78,18 +78,19 @@ func TestMissingPostWriteSampleDoesNotReuseOldFreeSpace(t *testing.T) {
 	}
 	next := m
 	next.ID[0] ^= 1
-	if err = Save(s, next); err != nil {
+	next.StreamID = ""
+	if err = saveTestManifest(s, &next); err != nil {
 		t.Fatal(err)
 	}
 	recs, err := Recommend(s, next)
-	if err != nil || len(recs) != 1 || recs[0].ID != "" {
+	if err != nil || len(recs) != 1 || recs[0].Remaining != 0 {
 		t.Fatal("stale free capacity reused", recs, err)
 	}
 }
 
 func TestDeviceMeasurementsAreImmutableHistory(t *testing.T) {
 	s, d, _ := setup(t)
-	l, err := RegisterMedia(s, d, "test", nil, false, false)
+	l, err := registerTestMember(s, d, "test", nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +148,7 @@ func TestExactEncodedBytesAndDeviceBoundaries(t *testing.T) {
 	for _, compressed := range []bool{false, true} {
 		s, d, root := setup(t)
 		makeSource(t, root)
-		if _, err := RegisterMedia(s, d, "test", nil, false, false); err != nil {
+		if _, err := registerTestMember(s, d, "test", nil, false, false); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := prepareMedia(s, d, nil); err != nil {
@@ -157,7 +158,7 @@ func TestExactEncodedBytesAndDeviceBoundaries(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = Save(s, m); err != nil {
+		if err = saveTestManifest(s, &m); err != nil {
 			t.Fatal(err)
 		}
 		spy := &byteObserved{Device: d}
@@ -177,7 +178,7 @@ func TestExactEncodedBytesAndDeviceBoundaries(t *testing.T) {
 		if n != spy.bytes || records != spy.records || end != position {
 			t.Fatal("device-confirmed facts lost", n, records, end, spy.bytes, spy.records, position)
 		}
-		if result, err := verifyAll(context.Background(), s, d, nil, ReadOptions{Memory: 8 << 20}); err != nil || result.Archives != 1 {
+		if result, err := verifyAll(context.Background(), s, d, nil, ReadOptions{Memory: 8 << 20, HardwareCompression: testCompression()}); err != nil || result.Archives != 1 {
 			t.Fatal("reader disagreed with exact write counts", result, err)
 		}
 	}
@@ -188,7 +189,7 @@ func (d *capacityDevice) Info() (media.Info, error) { return d.info, nil }
 func TestCapacityAndEarlyWarningStopBeforeAppend(t *testing.T) {
 	s, d, root := setup(t)
 	makeSource(t, root)
-	label, err := RegisterMedia(s, d, "test", nil, false, false)
+	label, err := registerTestMember(s, d, "test", nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +200,7 @@ func TestCapacityAndEarlyWarningStopBeforeAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = Save(s, m); err != nil {
+	if err = saveTestManifest(s, &m); err != nil {
 		t.Fatal(err)
 	}
 	info, err := d.Info()
@@ -227,7 +228,7 @@ func TestCapacityAndEarlyWarningStopBeforeAppend(t *testing.T) {
 		t.Fatal("early warning not retained offline", unhealthy, err)
 	}
 	recommendations, err := Recommend(s, m)
-	if err != nil || len(recommendations) != 1 || recommendations[0].ID != "" {
+	if err != nil || len(recommendations) != 1 || recommendations[0].Remaining != 0 {
 		t.Fatal("early-warning tape recommended", recommendations, err)
 	}
 }

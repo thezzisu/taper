@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/thezzisu/taper/internal/catalog"
+	"github.com/thezzisu/taper/internal/engine"
 	"github.com/thezzisu/taper/internal/media"
 	"os"
 	"path/filepath"
@@ -55,7 +56,8 @@ func TestCLIOfflineWorkflow(t *testing.T) {
 	if e := media.CreateSim(sim, 10737418240, true); e != nil {
 		t.Fatal(e)
 	}
-	call("tape register", "--device", sim, "--name", "TEST")
+	call("replica create", "TEST")
+	call("replica add", "--device", sim, "--label", "TEST")
 	call("tape ls")
 	call("tape probe", "--device", sim)
 	root := filepath.Join(dir, "source")
@@ -75,7 +77,7 @@ func TestCLIOfflineWorkflow(t *testing.T) {
 		t.Fatal("uncommitted plan was presented as an archive")
 	}
 	call("stage plan")
-	call("stage write", "--device", sim, "--memory", "8388608")
+	call("stage write", "--device", sim, "--memory", "8388608", "--yes")
 	call("archive ls")
 	call("archive browse", "--archive", id)
 	var out, stderr bytes.Buffer
@@ -83,7 +85,7 @@ func TestCLIOfflineWorkflow(t *testing.T) {
 	c.SetOut(&out)
 	c.SetErr(&stderr)
 	c.SetIn(strings.NewReader(""))
-	c.SetArgs(append(append([]string{"tape", "verify", id}, base...), "--device", sim, "-yn", "--json"))
+	c.SetArgs(append(append([]string{"tape", "verify", "--archive", id}, base...), "--device", sim, "-yn", "--json"))
 	if e = c.ExecuteContext(context.Background()); e != nil {
 		t.Fatal(e)
 	}
@@ -101,7 +103,7 @@ func TestCLIOfflineWorkflow(t *testing.T) {
 	c.SetOut(&out)
 	c.SetErr(&stderr)
 	c.SetIn(strings.NewReader("yes\n"))
-	c.SetArgs(append(append([]string{"tape", "verify"}, base...), "--device", sim, id))
+	c.SetArgs(append(append([]string{"tape", "verify"}, base...), "--device", sim, "--archive", id))
 	if e = c.ExecuteContext(context.Background()); e == nil || !strings.Contains(e.Error(), "requires a terminal") {
 		t.Fatal("non-interactive confirmation was bypassed", e)
 	}
@@ -109,7 +111,132 @@ func TestCLIOfflineWorkflow(t *testing.T) {
 		t.Fatal("confirmation failure moved tape", last)
 	}
 	call("tape verify", "--device", sim, "--memory", "8388608", "--yes")
-	call("tape reindex", "--device", sim, "--memory", "8388608")
+	call("tape reindex", "--device", sim, "--memory", "8388608", "--yes")
 	call("catalog export", "--dest", filepath.Join(dir, "export"))
 	call("key generate", "--key-file", filepath.Join(dir, "key"), "--keycard", filepath.Join(dir, "keycard"), "--name", "TEST2")
+}
+
+func TestLastMemberRemovalRequiresExplicitConfirmation(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "catalog.db")
+	pass := filepath.Join(dir, "pass")
+	os.WriteFile(pass, []byte("remove test"), 0600)
+	s, e := catalog.Create(db, []byte("remove test"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	r, e := engine.ReplicaCreate(s, "only", nil, true, false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	tape := filepath.Join(dir, "sim")
+	media.CreateSim(tape, 8<<30, false)
+	d, e := media.OpenSim(tape, true)
+	if e != nil {
+		t.Fatal(e)
+	}
+	member, e := engine.ReplicaAdd(s, d, r.ID, "111111L6", "note", nil)
+	d.Close()
+	if e != nil {
+		t.Fatal(e)
+	}
+	s.Close()
+	var out, errout bytes.Buffer
+	c := newCommand()
+	c.SetOut(&out)
+	c.SetErr(&errout)
+	c.SetIn(strings.NewReader("yes\n"))
+	base := []string{"replica", "rm", "--catalog", db, "--pass-file", pass, "--tape", member.ID}
+	c.SetArgs(base)
+	if e = c.Execute(); e == nil || !strings.Contains(errout.String(), "last cartridge") {
+		t.Fatal("last member removal did not warn/require terminal", e, errout.String())
+	}
+	s, e = catalog.OpenReadOnly(db, []byte("remove test"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	var count int
+	s.DB.QueryRow("SELECT COUNT(*) FROM media").Scan(&count)
+	s.Close()
+	if count != 1 {
+		t.Fatal("confirmation failure removed member")
+	}
+	c = newCommand()
+	c.SetOut(&out)
+	c.SetErr(&errout)
+	c.SetArgs(append(base, "--yes"))
+	if e = c.Execute(); e != nil {
+		t.Fatal(e)
+	}
+	s, e = catalog.OpenReadOnly(db, []byte("remove test"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer s.Close()
+	s.DB.QueryRow("SELECT COUNT(*) FROM media").Scan(&count)
+	if count != 0 {
+		t.Fatal("approved removal failed")
+	}
+}
+func TestSyncDryRunDoesNotCreateImage(t *testing.T) {
+	original := openTape
+	var last *cliTape
+	openTape = func(p string, w bool) (media.Device, error) {
+		d, e := media.OpenSim(p, w)
+		if e != nil {
+			return nil, e
+		}
+		last = &cliTape{Device: d}
+		return last, nil
+	}
+	defer func() { openTape = original }()
+	dir := t.TempDir()
+	db := filepath.Join(dir, "catalog.db")
+	pass := filepath.Join(dir, "pass")
+	os.WriteFile(pass, []byte("dry run"), 0600)
+	s, e := catalog.Create(db, []byte("dry run"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	r, e := engine.ReplicaCreate(s, "set", nil, true, false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	tape := filepath.Join(dir, "sim")
+	media.CreateSim(tape, 8<<30, false)
+	d, e := media.OpenSim(tape, true)
+	if e != nil {
+		t.Fatal(e)
+	}
+	engine.ReplicaAdd(s, d, r.ID, "", "", nil)
+	root := filepath.Join(dir, "source")
+	os.Mkdir(root, 0700)
+	os.WriteFile(filepath.Join(root, "data"), []byte("data"), 0600)
+	engine.StageAdd(context.Background(), s, root, nil, nil)
+	if _, e = engine.StagePlan(context.Background(), s, "archive", "", false, nil); e != nil {
+		t.Fatal(e)
+	}
+	if _, _, e = engine.StageWrite(context.Background(), s, d, nil, engine.WriteOptions{Memory: 8 << 20}); e != nil {
+		t.Fatal(e)
+	}
+	s.Close()
+	d.Close()
+	image := filepath.Join(dir, "must-not-exist.img")
+	var out bytes.Buffer
+	c := newCommand()
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"tape", "sync", "--catalog", db, "--pass-file", pass, "--device", tape, "--to", image, "--dry-run", "--json"})
+	if e = c.Execute(); e != nil {
+		t.Fatal(e)
+	}
+	if !json.Valid(out.Bytes()) {
+		t.Fatal("invalid JSON", out.String())
+	}
+	if _, e = os.Stat(image); !os.IsNotExist(e) {
+		t.Fatal("dry run created image")
+	}
+	if last.reads+last.locates+last.keys != 0 {
+		t.Fatal("dry run moved tape")
+	}
 }

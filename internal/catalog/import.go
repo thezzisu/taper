@@ -43,6 +43,15 @@ func Import(src, dst string, pass []byte) error {
 	if e = os.MkdirAll(filepath.Dir(dst), 0700); e != nil {
 		return e
 	}
+	created := []string{dst, dst + ".unlock", dst + ".mac"}
+	installed := false
+	defer func() {
+		if !installed {
+			for _, name := range created {
+				_ = os.Remove(name)
+			}
+		}
+	}()
 	file, e := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if e != nil {
 		return e
@@ -57,10 +66,21 @@ func Import(src, dst string, pass []byte) error {
 	}
 	file, e = os.OpenFile(dst+".unlock", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if e != nil {
-		os.Remove(dst)
 		return e
 	}
 	_, e = file.Write(descriptor)
+	if e == nil {
+		e = file.Sync()
+	}
+	file.Close()
+	if e != nil {
+		return e
+	}
+	file, e = os.OpenFile(dst+".mac", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if e != nil {
+		return e
+	}
+	_, e = file.Write(mac)
 	if e == nil {
 		e = file.Sync()
 	}
@@ -73,5 +93,9 @@ func Import(src, dst string, pass []byte) error {
 		return e
 	}
 	defer dir.Close()
-	return dir.Sync()
+	if e = dir.Sync(); e != nil {
+		return e
+	}
+	installed = true
+	return nil
 }

@@ -11,11 +11,13 @@ Long operations use schollz/progressbar on a terminal and periodic plain status
 otherwise. Atomic progress counters isolate rendering from tape I/O. A terminal
 recording is an external asciinema/tmux operation, never a taper dependency.
 
-Verification presents the exact selected tape and contiguous archive interval,
-then asks once. `--dry-run` is non-moving and `--yes` supports automation. Other
-important device/catalog actions may adopt the same scope preview when useful,
-but routine reads, staging, exports and existing password prompts should not
-accumulate confirmation steps.
+Verification currently presents the exact selected tape and contiguous archive
+interval, then asks once. `--dry-run` is non-moving and `--yes` supports automation.
+The [image and FUSE design](IMAGES.md) extends the same header and single scope
+confirmation to every physical read, write, seek and unload, including reindex
+and stage write. Non-moving queries,
+offline browsing, staging and exports do not acquire wear-related prompts.
+Existing password prompts should not be duplicated.
 
 The existing numbered `archive browse --tui` is retained. A future full TUI could
 use Bubble Tea and Bubbles with three views: Archives, Stage and Tapes. It would

@@ -29,6 +29,7 @@ type sequentialReader struct {
 	Bytes    int64
 	SinkWait time.Duration
 	progress func(uint64, int64)
+	sink     func([]byte, error) error
 }
 
 func readPoolCount(memory int64) (int, error) {
@@ -45,7 +46,7 @@ func readPoolCount(memory int64) (int, error) {
 	return count, nil
 }
 
-func newSequentialReader(ctx context.Context, d media.Device, start uint64, memory int64) (*sequentialReader, error) {
+func newSequentialReader(ctx context.Context, d interface{ ReadRecordInto([]byte) (int, error) }, start uint64, memory int64) (*sequentialReader, error) {
 	if e := ctx.Err(); e != nil {
 		return nil, e
 	}
@@ -143,3 +144,27 @@ func (r *sequentialReader) unread(b []byte) {
 	r.Bytes -= int64(len(b))
 }
 func (r *sequentialReader) Close() { r.cancel(); <-r.done }
+
+func (r *sequentialReader) accept(b []byte, e error) error {
+	if r.sink != nil {
+		return r.sink(b, e)
+	}
+	return nil
+}
+
+// Fill starts bounded read-ahead before an image is used to feed a tape writer.
+func (r *sequentialReader) Fill() error {
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	// Stay below the producer's low-free-buffer pause threshold.
+	for len(r.ready) < max(1, cap(r.ready)*3/4) {
+		select {
+		case <-r.ctx.Done():
+			return r.ctx.Err()
+		case <-r.done:
+			return nil
+		case <-ticker.C:
+		}
+	}
+	return nil
+}

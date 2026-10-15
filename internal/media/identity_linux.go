@@ -18,7 +18,7 @@ func (s *SG) ReadIdentity() ([]byte, error) {
 		return nil, e
 	}
 	if n < 9 || binary.BigEndian.Uint16(b[4:6]) != 0x803 {
-		return nil, errors.New("MAM identity absent")
+		return nil, ErrIdentityAbsent
 	}
 	l := int(binary.BigEndian.Uint16(b[7:9]))
 	if l > n-9 {

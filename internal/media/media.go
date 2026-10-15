@@ -6,6 +6,8 @@ import (
 	"io"
 )
 
+var ErrIdentityAbsent = errors.New("MAM identity absent")
+
 var ErrFilemark = errors.New("filemark")
 var ErrEnd = io.EOF
 
@@ -56,5 +58,6 @@ type Device interface {
 	SetCompression(bool) error
 	ReadIdentity() ([]byte, error)
 	WriteIdentity([]byte) error
+	Eject() error
 	Close() error
 }

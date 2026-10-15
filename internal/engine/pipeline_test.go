@@ -118,3 +118,22 @@ func TestPipelineEarlyErrorAndCancellation(t *testing.T) {
 		t.Fatal("undersized pool")
 	}
 }
+
+type readPrefillSource struct{}
+
+func (readPrefillSource) ReadRecordInto(b []byte) (int, error) { return len(b), nil }
+func TestReadPrefillLeavesProducerHeadroom(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	r, e := newSequentialReader(ctx, readPrefillSource{}, 0, 64<<20)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer r.Close()
+	if e = r.Fill(); e != nil {
+		t.Fatal("prefill deadlocked against producer hysteresis", e)
+	}
+	if len(r.ready) < cap(r.ready)*3/4 {
+		t.Fatal("insufficient prefill")
+	}
+}

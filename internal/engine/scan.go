@@ -38,6 +38,15 @@ type Exclusion struct {
 }
 type Manifest struct {
 	ID             format.ID
+	ReplicaID      string
+	StreamID       string
+	Seq            int
+	BeginPos       uint64
+	DataPos        uint64
+	CommitPos      uint64
+	Blocks         uint64
+	EndPos         uint64
+	EncodedBytes   *int64
 	Name           string
 	Source         string
 	Created        string
@@ -285,25 +294,29 @@ func Save(s *catalog.Store, m Manifest) error {
 	}
 	defer tx.Rollback()
 	rules, _ := json.Marshal(m.Rules)
-	if _, e = tx.Exec("INSERT INTO batches(id,name,source,created,rules,digest,logical_bytes,files,state) VALUES(?,?,?,?,?,?,?,?, 'planned')", m.ID.String(), m.Name, m.Source, m.Created, string(rules), m.Digest, m.Logical, m.Files); e != nil {
-		return e
+	if m.ReplicaID == "" || m.StreamID == "" || m.BeginPos < 2 {
+		return fmt.Errorf("batch must have an assigned replica-set stream and layout")
+	}
+
+	if _, e = tx.Exec("INSERT INTO batches(id,replica_id,stream_id,seq,name,source,created,rules,digest,logical_bytes,files,begin_pos,data_pos,commit_pos,blocks,end_pos,encoded_bytes,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'planned')", m.ID.String(), m.ReplicaID, m.StreamID, m.Seq, m.Name, m.Source, m.Created, string(rules), m.Digest, m.Logical, m.Files, m.BeginPos, m.DataPos, m.CommitPos, m.Blocks, m.EndPos, m.EncodedBytes); e != nil {
+		return fmt.Errorf("insert batch: %w", e)
 	}
 	if _, e = tx.Exec("INSERT INTO batch_sources VALUES(?,?,?,?)", m.ID.String(), m.SourceIdentity.Device, m.SourceIdentity.Inode, m.SourceIdentity.FSID); e != nil {
-		return e
+		return fmt.Errorf("insert batch source: %w", e)
 	}
 	for i, c := range m.Contents {
 		if _, e = tx.Exec("INSERT INTO contents(batch_id,ordinal,size,hash,meta_offset,data_offset) VALUES(?,?,?,?,?,?)", m.ID.String(), i, c.Size, c.Hash, c.Meta, c.Data); e != nil {
-			return e
+			return fmt.Errorf("insert content: %w", e)
 		}
 		for _, f := range c.Files {
 			if _, e = tx.Exec("INSERT INTO files VALUES(?,?,?,?,?)", m.ID.String(), f.Path, i, f.Source, f.MTime); e != nil {
-				return e
+				return fmt.Errorf("insert file: %w", e)
 			}
 		}
 	}
 	for _, x := range m.Excluded {
 		if _, e = tx.Exec("INSERT INTO exclusions VALUES(?,?,?,?)", m.ID.String(), x.Path, x.Size, x.Reason); e != nil {
-			return e
+			return fmt.Errorf("insert exclusion: %w", e)
 		}
 	}
 	return tx.Commit()
@@ -315,7 +328,7 @@ func Load(s *catalog.Store, id string) (m Manifest, err error) {
 	}
 	id = m.ID.String()
 	var rules string
-	err = s.DB.QueryRow("SELECT name,source,created,rules,digest,logical_bytes,files FROM batches WHERE id=?", id).Scan(&m.Name, &m.Source, &m.Created, &rules, &m.Digest, &m.Logical, &m.Files)
+	err = s.DB.QueryRow("SELECT replica_id,stream_id,seq,name,source,created,rules,digest,logical_bytes,files,begin_pos,data_pos,commit_pos,blocks,end_pos,encoded_bytes FROM batches WHERE id=?", id).Scan(&m.ReplicaID, &m.StreamID, &m.Seq, &m.Name, &m.Source, &m.Created, &rules, &m.Digest, &m.Logical, &m.Files, &m.BeginPos, &m.DataPos, &m.CommitPos, &m.Blocks, &m.EndPos, &m.EncodedBytes)
 	if err != nil {
 		return
 	}

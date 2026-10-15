@@ -13,18 +13,13 @@ import (
 	"github.com/thezzisu/taper/internal/ui"
 )
 
-type registrationResult struct {
-	engine.Label
-	HardwareCompression bool `json:"hardware_compression"`
-}
-
 type archiveResult struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Created string `json:"created"`
-	Files   int64  `json:"files"`
-	Bytes   int64  `json:"stream_bytes"`
-	Copies  int64  `json:"committed_copies"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Created  string `json:"created"`
+	Files    int64  `json:"files"`
+	Bytes    int64  `json:"stream_bytes"`
+	Replicas int64  `json:"committed_replicas"`
 }
 
 type browseResult struct {
@@ -86,14 +81,24 @@ func renderResult(w io.Writer, command, device string, value any, machine bool) 
 			rows = append(rows, ui.Row{Cells: []string{"Logical position", strconv.FormatUint(*v.Position, 10)}})
 		}
 		return ui.Table(w, []string{"FIELD", "VALUE"}, rows)
-	case registrationResult:
-		if err := ui.TapeHeader(w, v.Name, v.Serial, device); err != nil {
-			return err
+	case engine.ReplicaSet:
+		return ui.Table(w, []string{"REPLICA", "ID", "MEMBERS", "HARDWARE COMPRESSION"}, []ui.Row{{Cells: []string{ui.Safe(v.Name), v.ID, strconv.Itoa(v.Members), strconv.FormatBool(v.HardwareCompression)}}})
+	case []engine.ReplicaSet:
+		rows := []ui.Row{}
+		for _, r := range v {
+			rows = append(rows, ui.Row{Cells: []string{ui.Safe(r.Name), r.ID, strconv.Itoa(r.Members), strconv.FormatBool(r.HardwareCompression)}})
 		}
-		if err := field("Tape ID", v.ID); err != nil {
-			return err
+		return ui.Table(w, []string{"REPLICA", "ID", "MEMBERS", "HARDWARE COMPRESSION"}, rows)
+	case engine.MediaMember:
+		if e := ui.TapeHeader(w, v.Label, v.Serial, device); e != nil {
+			return e
 		}
-		return field("Hardware compression preference", v.HardwareCompression)
+		if e := field("Replica", v.Replica); e != nil {
+			return e
+		}
+		return field("Note", v.Note)
+	case engine.SyncResult:
+		return field("Synchronized", fmt.Sprintf("%d archives, %d objects, %d encoded bytes; pruned through %d", len(v.Archives), v.Objects, v.Bytes, v.PrunedEnd))
 	case []map[string]any:
 		rows := make([]ui.Row, 0, len(v))
 		for _, tape := range v {
@@ -101,15 +106,15 @@ func renderResult(w io.Writer, command, device string, value any, machine bool) 
 			if tape["write_budget_bytes"] != nil {
 				budget = fmt.Sprint(tape["write_budget_bytes"])
 			}
-			rows = append(rows, ui.Row{Cells: []string{ui.TapeLabel(tape["label"].(string), color, false), ui.Safe(tape["serial"].(string)), budget, ui.Safe(tape["state"].(string)), ui.Safe(tape["sampled"].(string))}})
+			rows = append(rows, ui.Row{Cells: []string{ui.TapeLabel(tape["label"].(string), color, false), ui.Safe(tape["serial"].(string)), budget, ui.Safe(tape["state"].(string)), ui.Safe(tape["sampled"].(string)), ui.Safe(fmt.Sprint(tape["note"]))}})
 		}
-		return ui.Table(w, []string{"LABEL", "SERIAL", "WRITE BUDGET (B)", "STATE", "SAMPLED"}, rows)
+		return ui.Table(w, []string{"LABEL", "SERIAL", "WRITE BUDGET (B)", "STATE", "SAMPLED", "NOTE"}, rows)
 	case []archiveResult:
 		rows := make([]ui.Row, 0, len(v))
 		for _, a := range v {
-			rows = append(rows, ui.Row{Cells: []string{a.ID, strconv.FormatInt(a.Files, 10), strconv.FormatInt(a.Bytes, 10), strconv.FormatInt(a.Copies, 10), ui.Safe(a.Name)}})
+			rows = append(rows, ui.Row{Cells: []string{a.ID, strconv.FormatInt(a.Files, 10), strconv.FormatInt(a.Bytes, 10), strconv.FormatInt(a.Replicas, 10), ui.Safe(a.Name)}})
 		}
-		return ui.Table(w, []string{"ARCHIVE ID", "FILES", "STREAM BYTES", "COPIES", "NAME"}, rows)
+		return ui.Table(w, []string{"ARCHIVE ID", "FILES", "STREAM BYTES", "REPLICAS", "NAME"}, rows)
 	case []engine.InventoryFile:
 		rows := make([]ui.Row, 0, len(v))
 		for _, f := range v {

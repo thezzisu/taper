@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,160 +11,197 @@ import (
 	"github.com/thezzisu/taper/internal/media"
 )
 
-// RegisterMedia only queries the drive and MAM. It does not locate, read tape
-// records, set a drive key, write a label, or erase anything.
-func RegisterMedia(s *catalog.Store, d media.Device, name string, key []byte, saveKey, hardwareCompression bool) (l Label, err error) {
-	explicitName := name != ""
-	info, err := d.Info()
-	if err != nil {
-		return
+func decodeLabel(raw []byte, serial string) (Label, error) {
+	var l Label
+	if len(raw) <= 7 || string(raw[:7]) != "taper1:" {
+		return l, errors.New("cartridge has no taper MAM identity")
 	}
-	if name == "" {
-		name = info.Barcode
+	var f []string
+	if json.Unmarshal(raw[7:], &f) != nil || len(f) != 3 {
+		return l, errors.New("invalid MAM identity")
 	}
-	if name == "" {
-		name = info.Serial
+	id, e := format.ParseID(f[0])
+	if e != nil || id.String() != f[0] {
+		return l, errors.New("invalid MAM replica ID")
 	}
-	if len(name) > 64 {
-		return l, errors.New("media label exceeds 64 UTF-8 bytes")
+	return Label{ID: f[0], Name: f[1], Serial: serial, KeyID: f[2], Version: 1}, nil
+}
+func ReadLabel(d media.Device) (Label, error) {
+	b, e := d.ReadIdentity()
+	if e != nil {
+		return Label{}, e
 	}
-	var state, oldKeyID string
-	err = s.DB.QueryRow("SELECT id,label,state,key_id FROM media WHERE serial=?", info.Serial).Scan(&l.ID, &l.Name, &state, &oldKeyID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return
+	i, e := d.Info()
+	if e != nil {
+		return Label{}, e
 	}
-	if errors.Is(err, sql.ErrNoRows) {
-		l = Label{ID: format.NewID().String(), Name: name, Serial: info.Serial, Version: 1}
-		state = "registered"
-		if b, e := d.ReadIdentity(); e == nil && len(b) > 7 && string(b[:7]) == "taper1:" {
-			var fields []string
-			if json.Unmarshal(b[7:], &fields) == nil && len(fields) == 3 {
-				if _, e = format.ParseID(fields[0]); e != nil {
-					return l, e
-				}
-				l.ID = fields[0]
-				oldKeyID = fields[2]
-				state = "open"
-			}
-		}
+	return decodeLabel(b, i.Serial)
+}
+func UnlockMedia(s *catalog.Store, d media.Device, provided []byte) (Label, error) {
+	l, e := ReadLabel(d)
+	if e != nil {
+		return l, e
 	}
-	if !explicitName && l.Name != "" {
-		name = l.Name
+	m, e := MemberForSerial(s, l.Serial)
+	if e != nil {
+		return l, e
 	}
-	l.Serial = info.Serial
-	l.Name = name
-	l.Version = 1
-	l.KeyID = oldKeyID
-	if len(key) > 0 {
-		if len(key) != 32 {
-			return l, errors.New("key must be 32 bytes")
-		}
-		id := media.KeyID(key)
-		if state != "registered" && oldKeyID != id {
-			return l, errors.New("key does not match the tape identity")
-		}
-		l.KeyID = id
+	if m.Replica != l.ID {
+		return l, errors.New("MAM identity differs from registered replica set")
 	}
-	var stored []byte
-	if saveKey {
-		stored = key
+	r, e := ResolveReplicaSet(s, m.Replica)
+	if e != nil {
+		return l, e
 	}
-	_, err = s.DB.Exec(`INSERT INTO media(id,label,serial,total,remaining,sampled,state,key_id,key,hardware_compression) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
-label=excluded.label,
-hardware_compression=excluded.hardware_compression,
-key_id=excluded.key_id,key=CASE WHEN ? THEN NULL WHEN excluded.key IS NOT NULL THEN excluded.key ELSE media.key END`, l.ID, l.Name, l.Serial, info.Total, info.Remaining, info.Sampled, state, l.KeyID, stored, hardwareCompression, !saveKey)
-	if err == nil {
-		err = recordMediaInfo(s, l.ID, info)
+	if r.KeyID != l.KeyID {
+		return l, errors.New("MAM key differs from replica-set key")
 	}
-	return
+	key, e := ReplicaKey(s, r.ID, provided)
+	if e != nil {
+		return l, e
+	}
+	defer clear(key)
+	return l, d.SetKey(key)
 }
 
-// Called only by the writer after source prefill succeeds. New media get their
-// public label at this point; occupied unformatted media are always refused.
-func prepareMedia(s *catalog.Store, d media.Device, provided []byte) (l Label, err error) {
-	info, err := d.Info()
-	if err != nil {
-		return
+// checkTarget is non-moving and never changes hardware settings or the catalog.
+func CheckWriteTarget(s *catalog.Store, d media.Device, b BatchMeta) (MediaMember, error) {
+	i, e := d.Info()
+	if e != nil {
+		return MediaMember{}, e
 	}
-	var state string
-	var stored []byte
-	var compression *bool
-	err = s.DB.QueryRow("SELECT id,label,state,key_id,key,hardware_compression FROM media WHERE serial=?", info.Serial).Scan(&l.ID, &l.Name, &state, &l.KeyID, &stored, &compression)
-	if errors.Is(err, sql.ErrNoRows) {
-		return l, errors.New("register the loaded tape with tape register first")
+	m, e := MemberForSerial(s, i.Serial)
+	if e != nil {
+		return m, e
 	}
-	if err != nil {
-		return
+	if m.Replica != b.ReplicaID {
+		return m, errors.New("loaded tape belongs to a different replica set")
 	}
-	defer clear(stored)
+	if m.State != "open" && m.State != "registered" {
+		return m, fmt.Errorf("cartridge state is %s", m.State)
+	}
 	var incomplete int
-	if err = s.DB.QueryRow("SELECT COUNT(*) FROM replicas WHERE media_id=? AND state IN ('writing','failed')", l.ID).Scan(&incomplete); err != nil {
-		return
+	if e = s.DB.QueryRow("SELECT COUNT(*) FROM replicas WHERE media_id=? AND state IN ('writing','failed')", m.ID).Scan(&incomplete); e != nil {
+		return m, e
 	}
-	if incomplete != 0 {
-		return l, errors.New("tape has an incomplete write; inspect and resolve its tail before appending")
+	if incomplete > 0 {
+		return m, errors.New("tape has an incomplete write; resolve its tail before appending")
 	}
-	if compression == nil {
-		return l, errors.New("hardware compression preference is unknown; register it before writing")
+	all, e := ListBatches(s, m.Replica)
+	if e != nil {
+		return m, e
 	}
-	if state == "open" {
-		l, err = UnlockMedia(s, d, provided)
-		if err == nil {
-			err = d.SetCompression(*compression)
+	if b.Seq < 0 || b.Seq >= len(all) {
+		return m, errors.New("archive is outside replica set")
+	}
+	expected := all[b.Seq]
+	if expected.Boundary(true) != b.Boundary(true) || expected.BeginPos != b.BeginPos || expected.EndPos != b.EndPos {
+		return m, errors.New("batch identity/layout differs from catalog")
+	}
+	prefix, e := MemberPrefix(s, m.ID, all)
+	if e != nil {
+		return m, e
+	}
+	if prefix != b.Seq {
+		return m, fmt.Errorf("target's next batch is %d, requested %d; synchronize prior batches first", prefix, b.Seq)
+	}
+	if e = checkMediaInfo(i); e != nil {
+		return m, e
+	}
+	limit, avail, e := i.Budget()
+	if e != nil {
+		return m, e
+	}
+	n := Budget(b.Manifest())
+	if b.EncodedBytes != nil {
+		n = *b.EncodedBytes
+	}
+	if n > max(int64(0), avail-Reserve(limit)) {
+		return m, errors.New("batch exceeds loaded tape budget")
+	}
+	if m.State == "open" {
+		l, e := ReadLabel(d)
+		if e != nil {
+			return m, e
 		}
-		return
+		r, e := ResolveReplicaSet(s, m.Replica)
+		if e != nil {
+			return m, e
+		}
+		if l.ID != m.Replica || l.Serial != m.Serial || l.KeyID != r.KeyID {
+			return m, errors.New("loaded tape identity differs from catalog")
+		}
 	}
-	if state != "registered" {
-		return l, fmt.Errorf("media state is %s", state)
+	return m, nil
+}
+func prepareMedia(s *catalog.Store, d media.Device, provided []byte) (Label, error) {
+	i, e := d.Info()
+	if e != nil {
+		return Label{}, e
 	}
-	if err = checkMediaInfo(info); err != nil {
-		return
+	m, e := MemberForSerial(s, i.Serial)
+	if e != nil {
+		return Label{}, e
 	}
-	key := stored
-	if len(provided) > 0 {
-		key = provided
+	r, e := ResolveReplicaSet(s, m.Replica)
+	if e != nil {
+		return Label{}, e
 	}
-	if l.KeyID != "" && media.KeyID(key) != l.KeyID {
-		return l, errors.New("matching tape key required")
-	}
-	if l.KeyID == "" && len(key) > 0 {
-		return l, errors.New("register the intended encryption key before writing")
-	}
-	if err = d.Locate(0); err != nil {
-		return
-	}
-	if _, e := d.ReadRecord(); e != io.EOF {
-		return l, errors.New("uninitialized tape is not empty; explicitly approve and clear it before writing")
-	}
-	if err = d.SetCompression(*compression); err != nil {
-		return
-	}
-	if err = d.SetKey(nil); err != nil {
-		return
-	}
-	if pos, e := d.Position(); e != nil {
+	l := Label{ID: r.ID, Name: m.Label, Serial: m.Serial, KeyID: r.KeyID, Version: 1}
+	key, e := ReplicaKey(s, r.ID, provided)
+	if e != nil {
 		return l, e
-	} else if pos != 0 {
-		if err = d.Locate(0); err != nil {
-			return
+	}
+	defer clear(key)
+	if m.State == "open" {
+		actual, e := UnlockMedia(s, d, key)
+		if e != nil {
+			return l, e
 		}
+		if e = d.SetCompression(r.HardwareCompression); e != nil {
+			return l, e
+		}
+		return actual, nil
 	}
-	l.Serial = info.Serial
-	l.Version = 1
-	id, _ := format.ParseID(l.ID)
-	if err = control(d, format.Media, id, l); err != nil {
-		return
+	if m.State != "registered" {
+		return l, fmt.Errorf("cartridge state is %s", m.State)
 	}
-	if err = d.Filemark(); err != nil {
-		return
+	if e = checkMediaInfo(i); e != nil {
+		return l, e
 	}
-	b, _ := json.Marshal([]string{l.ID, l.Name, l.KeyID})
-	if err = d.WriteIdentity(append([]byte("taper1:"), b...)); err != nil {
-		return
+	if e = d.Locate(0); e != nil {
+		return l, e
 	}
-	if err = d.SetKey(key); err != nil {
-		return
+	if _, e = d.ReadRecord(); e != io.EOF {
+		return l, errors.New("registered tape is not empty; refusing initialization")
 	}
-	_, err = s.DB.Exec("UPDATE media SET state='open' WHERE id=?", l.ID)
-	return
+	if e = d.SetCompression(r.HardwareCompression); e != nil {
+		return l, e
+	}
+	if e = d.SetKey(nil); e != nil {
+		return l, e
+	}
+	pos, e := d.Position()
+	if e != nil || pos != 0 {
+		return l, errors.Join(e, errors.New("empty tape position is not BOT"))
+	}
+	if _, e = s.DB.Exec("UPDATE media SET state='initializing' WHERE id=?", m.ID); e != nil {
+		return l, e
+	}
+	id, _ := format.ParseID(r.ID)
+	if e = control(d, format.Media, id, l); e != nil {
+		return l, e
+	}
+	if e = d.Filemark(); e != nil {
+		return l, e
+	}
+	raw, _ := json.Marshal([]string{l.ID, l.Name, l.KeyID})
+	if e = d.WriteIdentity(append([]byte("taper1:"), raw...)); e != nil {
+		return l, e
+	}
+	if e = d.SetKey(key); e != nil {
+		return l, e
+	}
+	_, e = s.DB.Exec("UPDATE media SET state='open' WHERE id=?", m.ID)
+	return l, e
 }

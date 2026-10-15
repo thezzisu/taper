@@ -45,6 +45,9 @@ func (s *batchStream) Read(p []byte) (int, error) {
 			}
 			return 0, errors.New("invalid sequential data record")
 		}
+		if e = s.d.accept(b, nil); e != nil {
+			return 0, e
+		}
 		s.seq++
 		s.pending = f.Payload
 		s.short = len(f.Payload) < format.PayloadSize

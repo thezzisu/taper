@@ -18,12 +18,13 @@ import (
 )
 
 type Stage struct {
-	Source   string          `json:"source,omitempty"`
-	Identity SourceIdentity  `json:"identity"`
-	Rules    policy.Rules    `json:"rules"`
-	Plan     string          `json:"plan,omitempty"`
-	Files    []InventoryFile `json:"files"`
-	Excluded []Exclusion     `json:"excluded,omitempty"`
+	ReplicaID string          `json:"replica_id,omitempty"`
+	Source    string          `json:"source,omitempty"`
+	Identity  SourceIdentity  `json:"identity"`
+	Rules     policy.Rules    `json:"rules"`
+	Plan      string          `json:"plan,omitempty"`
+	Files     []InventoryFile `json:"files"`
+	Excluded  []Exclusion     `json:"excluded,omitempty"`
 }
 
 // The lock spans scanning/writing, without holding a SQLite transaction open.
@@ -48,8 +49,9 @@ func LoadStage(s *catalog.Store) (v Stage, err error) {
 	}
 	defer tx.Rollback()
 	var identity, rules string
+	var replicaID sql.NullString
 	var plan sql.NullString
-	err = tx.QueryRow("SELECT source,identity,rules,plan_id FROM stage WHERE id=1").Scan(&v.Source, &identity, &rules, &plan)
+	err = tx.QueryRow("SELECT replica_id,source,identity,rules,plan_id FROM stage WHERE id=1").Scan(&replicaID, &v.Source, &identity, &rules, &plan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return v, nil
 	}
@@ -57,6 +59,8 @@ func LoadStage(s *catalog.Store) (v Stage, err error) {
 		return
 	}
 	v.Plan = plan.String
+	v.ReplicaID = replicaID.String
+
 	if err = json.Unmarshal([]byte(identity), &v.Identity); err != nil {
 		return
 	}
@@ -154,8 +158,8 @@ func StageAdd(ctx context.Context, s *catalog.Store, root string, paths []string
 	if e = invalidateStagePlan(tx); e != nil {
 		return 0, e
 	}
-	if _, e = tx.Exec("INSERT INTO stage VALUES(1,?,?,?,NULL) ON CONFLICT(id) DO UPDATE SET plan_id=NULL", root, string(id), string(policyJSON)); e != nil {
-		return 0, e
+	if _, e = tx.Exec("INSERT INTO stage(id,replica_id,source,identity,rules,plan_id) VALUES(1,NULL,?,?,?,NULL) ON CONFLICT(id) DO UPDATE SET source=excluded.source,identity=excluded.identity,rules=excluded.rules,plan_id=NULL", root, string(id), string(policyJSON)); e != nil {
+		return 0, fmt.Errorf("save stage: %w", e)
 	}
 	selected := map[string]bool{}
 	for _, f := range inv.Files {
@@ -270,8 +274,12 @@ func invalidateStagePlan(tx *sql.Tx) error {
 	if e = tx.QueryRow("SELECT COUNT(*) FROM replicas WHERE batch_id=?", old.String).Scan(&replicas); e != nil {
 		return e
 	}
-	if replicas > 0 {
-		return nil
+	var state string
+	if e = tx.QueryRow("SELECT state FROM batches WHERE id=?", old.String).Scan(&state); e != nil {
+		return e
+	}
+	if replicas > 0 || state != "planned" {
+		return errors.New("batch has started; resolve its unfinished data before changing the stage")
 	}
 	for _, table := range []string{"files", "contents", "exclusions", "batch_sources"} {
 		if _, e = tx.Exec("DELETE FROM "+table+" WHERE batch_id=?", old.String); e != nil {
@@ -282,10 +290,7 @@ func invalidateStagePlan(tx *sql.Tx) error {
 	return e
 }
 
-func StagePlan(ctx context.Context, s *catalog.Store, name string, copies int, noCache bool, progress func(int64)) (m Manifest, err error) {
-	if copies < 0 {
-		return m, errors.New("copies must be positive")
-	}
+func StagePlan(ctx context.Context, s *catalog.Store, name, replica string, noCache bool, progress func(int64)) (m Manifest, err error) {
 	release, err := lockStage(s)
 	if err != nil {
 		return
@@ -298,84 +303,84 @@ func StagePlan(ctx context.Context, s *catalog.Store, name string, copies int, n
 	if len(v.Files) == 0 {
 		return m, errors.New("staging area is empty")
 	}
+	if replica == "" {
+		replica = v.ReplicaID
+	}
+	r, err := ResolveReplicaSet(s, replica)
+	if err != nil {
+		return m, err
+	}
 	if err = CheckSource(Manifest{Source: v.Source, SourceIdentity: v.Identity}); err != nil {
 		return
 	}
-	if v.Plan != "" && !noCache {
+	if v.Plan != "" {
 		m, err = Load(s, v.Plan)
 		if err != nil {
 			return
 		}
+		if m.ReplicaID != r.ID {
+			return m, errors.New("plan is bound to another replica set; restage before changing it")
+		}
+		var state string
+		if err = s.DB.QueryRow("SELECT state FROM batches WHERE id=?", v.Plan).Scan(&state); err != nil {
+			return
+		}
+		if state != "planned" {
+			return m, errors.New("batch already started; resolve it before replanning")
+		}
 		if err = checkSelectedFiles(m); err != nil {
 			return
 		}
-		if copies > 0 {
-			_, err = s.DB.Exec("UPDATE batches SET required_replicas=? WHERE id=?", copies, m.ID.String())
-		}
-		if err == nil {
-			err = indexArchives(ctx, s, m, archiveIndexOptions{Force: noCache})
-		}
-		return
 	}
-	if copies == 0 {
-		if v.Plan != "" {
-			if err = s.DB.QueryRow("SELECT required_replicas FROM batches WHERE id=?", v.Plan).Scan(&copies); err != nil {
+	if v.Plan == "" || noCache {
+		var cache *HashCache
+		if !noCache {
+			cache, err = NewHashCache(s, v.Source)
+			if err != nil {
 				return
 			}
-		} else {
-			copies = 1
 		}
-	}
-	if name == "" {
-		name = "archive"
-	}
-	var cache *HashCache
-	if !noCache {
-		cache, err = NewHashCache(s, v.Source)
-		if err != nil {
-			return
+		if name == "" {
+			name = "archive"
 		}
-	}
-	inv := Inventory{Root: v.Source, Files: v.Files, Identity: v.Identity, Excluded: v.Excluded}
-	m, err = scanInventory(ctx, inv, name, v.Rules, progress, cache)
-	if err != nil {
-		return
-	}
-	if v.Plan != "" {
-		old, e := Load(s, v.Plan)
+		next, e := scanInventory(ctx, Inventory{Root: v.Source, Files: v.Files, Identity: v.Identity, Excluded: v.Excluded}, name, v.Rules, progress, cache)
 		if e != nil {
 			return m, e
 		}
-		if old.Digest != m.Digest {
-			return m, errors.New("source differs from the existing plan; restage it")
+		if v.Plan != "" {
+			if next.Digest != m.Digest {
+				return m, errors.New("source differs from the existing plan; restage it")
+			}
+		} else {
+			m = next
+			m.ReplicaID = r.ID
+			if err = assignBatch(s, &m); err != nil {
+				return
+			}
 		}
-		m.ID = old.ID
-		m.Name = old.Name
-	} else if err = Save(s, m); err != nil {
-		return
 	}
-	tx, err := s.DB.Begin()
+	budget, err := ReplicaBudget(s, r.ID)
 	if err != nil {
 		return
 	}
-	defer tx.Rollback()
-	if _, err = tx.Exec("UPDATE batches SET required_replicas=? WHERE id=?", copies, m.ID.String()); err != nil {
-		return
+	if Budget(m) > budget {
+		return m, fmt.Errorf("archive requires %d encoded bytes; replica set budget is %d", Budget(m), budget)
 	}
-	if _, err = tx.Exec("UPDATE stage SET plan_id=? WHERE id=1", m.ID.String()); err != nil {
-		return
+	if v.Plan == "" {
+		if err = Save(s, m); err != nil {
+			return
+		}
+		if _, err = s.DB.Exec("UPDATE stage SET replica_id=?,plan_id=? WHERE id=1", r.ID, m.ID.String()); err != nil {
+			return
+		}
 	}
-	err = tx.Commit()
-	if err == nil {
-		err = indexArchives(ctx, s, m, archiveIndexOptions{Force: noCache})
-	}
+	err = indexArchives(ctx, s, m, archiveIndexOptions{Force: noCache})
 	return
 }
 
+// StageWrite prepares a complete image before any physical write when both
+// destinations are supplied. Original sources are streamed once.
 func StageWrite(ctx context.Context, s *catalog.Store, d media.Device, key []byte, o WriteOptions) (archive, replica string, err error) {
-	if err = ctx.Err(); err != nil {
-		return
-	}
 	release, err := lockStage(s)
 	if err != nil {
 		return
@@ -393,49 +398,48 @@ func StageWrite(ctx context.Context, s *catalog.Store, d media.Device, key []byt
 		return
 	}
 	archive = m.ID.String()
-	if err = CheckSource(m); err != nil {
-		return
+	if d == nil && o.Image == nil {
+		return archive, "", errors.New("provide --device, --image, or both")
 	}
-	if err = checkSelectedFiles(m); err != nil {
-		return
+	// Validate the target, including its prefix, before preparing an image.
+	if d != nil {
+		if _, err = CheckWriteTarget(s, d, Meta(m)); err != nil {
+			return
+		}
 	}
-	status, err := BatchStatus(s, m)
-	if err != nil {
-		return
-	}
-	if status.Covered {
-		return archive, "", errors.New("plan already has its required copies; clear the stage or increase --copies")
-	}
-	info, e := d.Info()
-	if e != nil {
-		return archive, "", e
-	}
-	var exists int
-	if err = s.DB.QueryRow("SELECT COUNT(*) FROM replicas r JOIN media m ON m.id=r.media_id WHERE r.batch_id=? AND m.serial=? AND r.state='committed'", archive, info.Serial).Scan(&exists); err != nil {
-		return
-	}
-	if exists > 0 {
-		return archive, "", errors.New("this archive already has a committed copy on the loaded tape")
-	}
-	replica, err = WriteArchive(ctx, s, d, m, key, o)
-	if err != nil {
-		return
-	}
-	status, err = BatchStatus(s, m)
-	if err != nil {
-		return
-	}
-	if status.Covered {
-		tx, e := s.DB.Begin()
+	if o.Image != nil {
+		if o.Image.ReplicaID != m.ReplicaID {
+			return archive, "", errors.New("image belongs to another replica set")
+		}
+		k, e := ReplicaKey(s, m.ReplicaID, key)
 		if e != nil {
-			return archive, replica, e
+			return archive, "", e
 		}
-		defer tx.Rollback()
-		if _, e = tx.Exec("DELETE FROM stage_files; DELETE FROM stage_exclusions; DELETE FROM stage"); e != nil {
-			return archive, replica, e
+		defer clear(k)
+		if err = o.Image.SetKey(k); err != nil {
+			return
 		}
-		err = tx.Commit()
+		var prepared int64
+		if prepared, err = PrepareImageArchive(ctx, s, o.Image, m, o); err != nil {
+			return
+		}
+		if d != nil {
+			if o.Progress != nil {
+				notify := o.Progress
+				o.Progress = func(n uint64, b int64) { notify(m.Blocks+min(n, m.Blocks), prepared+b) }
+			}
+			replica, err = writeImageArchive(ctx, s, d, o.Image, Meta(m), key, o)
+			if err != nil {
+				return
+			}
+		}
+	} else {
+		replica, err = WriteArchive(ctx, s, d, m, key, o)
+		if err != nil {
+			return
+		}
 	}
+	_, err = s.DB.Exec("DELETE FROM stage_files; DELETE FROM stage_exclusions; DELETE FROM stage")
 	return
 }
 

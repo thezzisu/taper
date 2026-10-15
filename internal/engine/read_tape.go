@@ -16,8 +16,9 @@ import (
 )
 
 type ReadOptions struct {
-	Memory   int64
-	Progress func(uint64, int64)
+	Memory              int64
+	Progress            func(uint64, int64)
+	HardwareCompression *bool
 }
 type TapeResult struct {
 	Complete        bool          `json:"complete"`
@@ -41,6 +42,7 @@ type scannedArchive struct {
 	begin               Boundary
 	end                 Boundary
 	start, data, commit uint64
+	replicaID           string
 	bytes               int64
 	finish              uint64
 }
@@ -60,6 +62,22 @@ func ReindexTape(ctx context.Context, s *catalog.Store, d media.Device, provided
 	if err != nil {
 		return
 	}
+	mam, e := d.ReadIdentity()
+	if e != nil {
+		return out, e
+	}
+	candidate, e := decodeLabel(mam, info.Serial)
+	if e != nil {
+		return out, e
+	}
+	var registered int
+	if e = s.DB.QueryRow("SELECT COUNT(*) FROM replica_sets WHERE id=?", candidate.ID).Scan(&registered); e != nil {
+		return out, e
+	}
+	if registered == 0 && o.HardwareCompression == nil {
+		return out, errors.New("reindex of an unknown replica set requires an explicit --hardware-compression preference")
+	}
+
 	if err = d.SetKey(nil); err != nil {
 		return
 	}
@@ -89,7 +107,7 @@ func ReindexTape(ctx context.Context, s *catalog.Store, d media.Device, provided
 	key := provided
 	if len(key) == 0 && label.KeyID != "" {
 		var saved []byte
-		e := s.DB.QueryRow("SELECT key FROM media WHERE id=? AND serial=?", label.ID, info.Serial).Scan(&saved)
+		e := s.DB.QueryRow("SELECT rs.key FROM replica_sets rs JOIN media m ON m.replica_id=rs.id WHERE rs.id=? AND m.serial=?", label.ID, info.Serial).Scan(&saved)
 		if e != nil && !errors.Is(e, sql.ErrNoRows) {
 			return out, e
 		}
@@ -211,59 +229,79 @@ func ReindexTape(ctx context.Context, s *catalog.Store, d media.Device, provided
 	if info.Serial != label.Serial {
 		return out, errors.New("cartridge changed during scan")
 	}
-	var existing string
-	e = s.DB.QueryRow("SELECT id FROM media WHERE serial=?", info.Serial).Scan(&existing)
-	if e == nil && existing != label.ID {
-		return out, errors.New("cartridge was registered with a different identity")
+	member, e := MemberForSerial(s, info.Serial)
+	if errors.Is(e, sql.ErrNoRows) {
+		member = MediaMember{ID: format.NewID().String(), Replica: label.ID, Serial: label.Serial, Label: label.Name, State: "open"}
+	} else if e != nil {
+		return out, e
+	} else if member.Replica != label.ID {
+		return out, errors.New("cartridge belongs to another replica set")
 	}
-	if e != nil && !errors.Is(e, sql.ErrNoRows) {
+	var setCount int
+	if e = s.DB.QueryRow("SELECT COUNT(*) FROM replica_sets WHERE id=?", label.ID).Scan(&setCount); e != nil {
 		return out, e
 	}
-	_, e = s.DB.Exec("INSERT INTO media(id,label,serial,total,remaining,sampled,state,key_id,key) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET state='open'", label.ID, label.Name, label.Serial, info.Total, info.Remaining, info.Sampled, "open", label.KeyID, key)
-	if e != nil {
+	if setCount == 0 {
+		if o.HardwareCompression == nil {
+			return out, errors.New("unknown replica write preference; provide --hardware-compression explicitly")
+		}
+		if _, e = s.DB.Exec("INSERT INTO replica_sets(id,name,key_id,key,hardware_compression) VALUES(?,?,?,?,?)", label.ID, label.ID, label.KeyID, key, *o.HardwareCompression); e != nil {
+			return out, e
+		}
+	}
+	var compression bool
+	if e = s.DB.QueryRow("SELECT hardware_compression FROM replica_sets WHERE id=?", label.ID).Scan(&compression); e != nil {
+		return out, e
+	}
+	if _, e = s.DB.Exec("INSERT INTO media(id,replica_id,label,note,serial,total,remaining,sampled,state,key_id,key,hardware_compression) VALUES(?,?,?,'',?,?,?,?,'open',?,?,?) ON CONFLICT(id) DO UPDATE SET state='open'", member.ID, label.ID, label.Name, label.Serial, info.Total, info.Remaining, info.Sampled, label.KeyID, key, compression); e != nil {
 		return out, e
 	}
 	seen := map[string]bool{}
-	for _, a := range archives {
+	for idx, a := range archives {
 		m := a.m
-		var digest string
-		e = s.DB.QueryRow("SELECT digest FROM batches WHERE id=?", m.ID.String()).Scan(&digest)
+		m.ReplicaID = label.ID
+		m.StreamID = a.begin.Replica
+		m.Seq = idx
+		m.BeginPos, m.DataPos, m.CommitPos, m.Blocks, m.EndPos = a.start, a.data, a.commit, a.end.Blocks, a.finish
+		m.EncodedBytes = &a.bytes
+		var existing, digest string
+		e = s.DB.QueryRow("SELECT replica_id,digest FROM batches WHERE id=?", m.ID.String()).Scan(&existing, &digest)
 		if errors.Is(e, sql.ErrNoRows) {
 			e = Save(s, m)
-			digest = m.Digest
-		}
-		if e != nil {
-			issue(fmt.Errorf("archive %s: %w", m.ID.String(), e))
-			continue
-		}
-		if digest != m.Digest {
-			issue(fmt.Errorf("archive %s differs from catalog", m.ID.String()))
-			continue
-		}
-		var result sql.Result
-		result, e = s.DB.Exec(`INSERT INTO replicas(id,batch_id,media_id,begin_pos,data_pos,commit_pos,blocks,confirmed_bytes,confirmed_records,end_pos,state,verified)
-VALUES(?,?,?,?,?,?,?,?,?,?,'committed',?) ON CONFLICT(id) DO UPDATE SET state='committed',error='',verified=excluded.verified,confirmed_bytes=excluded.confirmed_bytes,confirmed_records=excluded.confirmed_records,end_pos=excluded.end_pos
-WHERE replicas.batch_id=excluded.batch_id AND replicas.media_id=excluded.media_id AND replicas.begin_pos=excluded.begin_pos AND replicas.data_pos=excluded.data_pos AND replicas.commit_pos=excluded.commit_pos AND replicas.blocks=excluded.blocks
-AND (replicas.confirmed_bytes IS NULL OR replicas.confirmed_bytes=excluded.confirmed_bytes) AND (replicas.confirmed_records IS NULL OR replicas.confirmed_records=excluded.confirmed_records) AND (replicas.end_pos IS NULL OR replicas.end_pos=excluded.end_pos)`, a.begin.Replica, a.begin.Batch, label.ID, a.start, a.data, a.commit, a.end.Blocks, a.bytes, a.end.Blocks+2, a.finish, time.Now().UTC().Format(time.RFC3339))
-		if e == nil {
-			n, _ := result.RowsAffected()
-			if n != 1 {
-				e = errors.New("existing replica identity or layout differs")
+		} else if e == nil {
+			old, e := Load(s, m.ID.String())
+			if e != nil {
+				return out, e
 			}
-		}
-		if e == nil {
-			_, e = s.DB.Exec("UPDATE batches SET state='committed' WHERE id=?", m.ID.String())
-		}
-		if e == nil {
-			out.Imported++
+			if old.ReplicaID != m.ReplicaID || old.Digest != m.Digest || old.StreamID != m.StreamID || old.BeginPos != m.BeginPos || old.EndPos != m.EndPos {
+				issue(fmt.Errorf("archive %s differs from catalog", m.ID))
+				continue
+			}
 		}
 		if e != nil {
 			issue(e)
-		} else {
-			seen[a.begin.Replica] = true
+			continue
 		}
+		var rid string
+		e = s.DB.QueryRow("SELECT id FROM replicas WHERE batch_id=? AND media_id=? AND begin_pos=?", m.ID.String(), member.ID, m.BeginPos).Scan(&rid)
+		if errors.Is(e, sql.ErrNoRows) {
+			rid = format.NewID().String()
+		} else if e != nil {
+			return out, e
+		}
+		_, e = s.DB.Exec(`INSERT INTO replicas(id,batch_id,media_id,begin_pos,data_pos,commit_pos,blocks,confirmed_bytes,confirmed_records,end_pos,state,verified) VALUES(?,?,?,?,?,?,?,?,?,?,'committed',?)
+ ON CONFLICT(id) DO UPDATE SET state='committed',error='',data_pos=excluded.data_pos,commit_pos=excluded.commit_pos,blocks=excluded.blocks,confirmed_bytes=excluded.confirmed_bytes,confirmed_records=excluded.confirmed_records,end_pos=excluded.end_pos,verified=excluded.verified`, rid, m.ID.String(), member.ID, m.BeginPos, m.DataPos, m.CommitPos, m.Blocks, a.bytes, m.Blocks+2, m.EndPos, time.Now().UTC().Format(time.RFC3339))
+		if e != nil {
+			issue(e)
+			continue
+		}
+		if _, e = s.DB.Exec("UPDATE batches SET state='committed',encoded_bytes=? WHERE id=?", a.bytes, m.ID.String()); e != nil {
+			return out, e
+		}
+		seen[m.ID.String()] = true
+		out.Imported++
 	}
-	rows, e := s.DB.Query("SELECT id FROM replicas WHERE media_id=? AND state='committed'", label.ID)
+	rows, e := s.DB.Query("SELECT batch_id FROM replicas WHERE media_id=? AND state='committed'", member.ID)
 	if e != nil {
 		return out, e
 	}
@@ -273,7 +311,7 @@ AND (replicas.confirmed_bytes IS NULL OR replicas.confirmed_bytes=excluded.confi
 			break
 		}
 		if !seen[id] {
-			issue(fmt.Errorf("catalog replica %s was not found intact on tape", id))
+			issue(fmt.Errorf("catalog archive %s was not found intact on tape", id))
 		}
 	}
 	if e == nil {
@@ -283,15 +321,10 @@ AND (replicas.confirmed_bytes IS NULL OR replicas.confirmed_bytes=excluded.confi
 	if e != nil {
 		return out, e
 	}
-	var registered int
-	if e = s.DB.QueryRow("SELECT COUNT(*) FROM media WHERE id=?", label.ID).Scan(&registered); e != nil {
+	if e = recordMediaInfo(s, member.ID, info); e != nil {
 		return out, e
 	}
-	if registered > 0 {
-		if e = recordMediaInfo(s, label.ID, info); e != nil {
-			return out, e
-		}
-	}
+
 	if len(out.Issues) > 0 {
 		return out, fmt.Errorf("complete tape scan found %d issues", len(out.Issues))
 	}
