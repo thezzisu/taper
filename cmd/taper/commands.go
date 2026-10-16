@@ -11,7 +11,8 @@ import (
 
 type settings struct {
 	catalog, passFile, device, source, name, rules, archive, dest                          string
-	replica, image, label, note, from, to, tape                                            string
+	replica, image, label, note, tape                                                      string
+	fromDevice, fromImage, toDevice, toImage                                               string
 	keyFile, keycard, passwordFile                                                         string
 	memory                                                                                 int64
 	minBlocks                                                                              uint64
@@ -106,12 +107,28 @@ func newCommand() *cobra.Command {
 	c.Flags().StringVar(&o.source, "source", "", "snapshot directory")
 	_ = c.MarkFlagRequired("source")
 	leaf(cat, "rekey", "Change the catalog passphrase", cobra.NoArgs, true)
-	rep := group("replica", "Manage replica sets and mount their files")
+	rep := group("replica", "Manage, synchronize and mount replica sets")
 	c = leaf(rep, "create NAME", "Create a replica set", cobra.ExactArgs(1), true)
 	key(c)
 	c.Flags().BoolVar(&o.noSaveKey, "no-save-key", false, "keep only the key ID in the catalog")
 	c.Flags().BoolVar(&o.hardwareCompression, "hardware-compression", true, "hardware compression preference for all members")
 	leaf(rep, "ls", "List replica sets", cobra.NoArgs, true)
+	c = leaf(rep, "sync [NAME]", "Synchronize a replica stream between devices and images", cobra.MaximumNArgs(1), true)
+	c.Long = "Synchronize complete archives within one replica set. Select exactly one source and one destination. Image destinations keep the catalog read-only; device destinations append their next missing archives."
+	c.Example = "  taper replica sync --from-device /dev/sg1 --to-image /ssd/cold.img --archive ARCHIVE_ID\n  taper replica sync --from-image /ssd/cold.img --to-image /hdd/cold.img\n  taper replica sync --from-image /hdd/cold.img --to-device /dev/sg1"
+	c.Flags().StringVar(&o.fromDevice, "from-device", "", "source Linux tape SG device")
+	c.Flags().StringVar(&o.fromImage, "from-image", "", "source sparse replica image")
+	c.MarkFlagsOneRequired("from-device", "from-image")
+	c.MarkFlagsMutuallyExclusive("from-device", "from-image")
+	c.Flags().StringVar(&o.toDevice, "to-device", "", "destination Linux tape SG device")
+	c.Flags().StringVar(&o.toImage, "to-image", "", "destination sparse replica image")
+	c.MarkFlagsOneRequired("to-device", "to-image")
+	c.MarkFlagsMutuallyExclusive("to-device", "to-image")
+	selector(c)
+	key(c)
+	memory(c)
+	consent(c)
+	c.Flags().BoolVar(&o.prune, "prune", false, "release source image batches committed on every member")
 	c = leaf(rep, "add [NAME]", "Bind the loaded cartridge without moving tape", cobra.MaximumNArgs(1), true)
 	device(c, true)
 	key(c)
@@ -132,7 +149,7 @@ func newCommand() *cobra.Command {
 	memory(c)
 	consent(c)
 	c.Flags().Uint64Var(&o.minBlocks, "min-blocks", 256, "minimum DATA records per missing read window")
-	tape := group("tape", "Inspect, synchronize and verify physical tapes")
+	tape := group("tape", "Inspect, verify and eject physical tapes")
 	leaf(tape, "ls", "List saved physical cartridge facts", cobra.NoArgs, true)
 	c = leaf(tape, "probe", "Read drive and MAM facts without movement", cobra.NoArgs, false)
 	device(c, true)
@@ -148,17 +165,6 @@ func newCommand() *cobra.Command {
 	memory(c)
 	consent(c)
 	c.Flags().BoolVar(&o.hardwareCompression, "hardware-compression", false, "explicit future write preference when recovering an unknown set")
-	c = leaf(tape, "sync", "Copy complete batches between a tape and sparse image", cobra.NoArgs, true)
-	device(c, true)
-	key(c)
-	memory(c)
-	selector(c)
-	consent(c)
-	c.Flags().StringVar(&o.from, "from", "", "source image for writing tape")
-	c.Flags().StringVar(&o.to, "to", "", "destination image for reading tape")
-	c.MarkFlagsOneRequired("from", "to")
-	c.MarkFlagsMutuallyExclusive("from", "to")
-	c.Flags().BoolVar(&o.prune, "prune", false, "release image batches committed on every member (--from only)")
 	c = leaf(tape, "eject", "Rewind and unload the cartridge", cobra.NoArgs, false)
 	device(c, true)
 	consent(c)

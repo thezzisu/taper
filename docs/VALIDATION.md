@@ -113,3 +113,34 @@ all tape drives or sources. A zero software buffer-wait count does not directly
 measure mechanical backhitches. Read-pool memory is only part of process memory;
 qualify the complete path locally before changing it. Physical tape is not a
 benchmark loop, and an interrupted verification is not an invitation to repeat it.
+
+## Replica synchronization and image writes
+
+Local tests cover all four device/image endpoint combinations, source/destination
+identity rejection, sparse image merging with a read-only catalog, encrypted and
+zstd records, one bounded source pass for two simulated drives, target prefix and
+capacity checks, source failure without retries, and pruning only a common durable
+physical prefix. Image tests cover reads from pending buffers, nonadjacent writes,
+short sparse slots, filemarks and unpublished data after simulated interruption.
+
+On 2026-10-16 the image writer was changed to reuse a 4 MiB aggregation buffer,
+request asynchronous Linux writeback, and publish coverage after a 4 GiB durable
+checkpoint or an explicit Flush/filemark/Close. An external synthetic record source
+exercised the complete bounded reader, frame decoding, content SHA-256, encryption,
+image checkpoints and final flush on XFS. No physical tape was opened.
+
+| Target and path | Result |
+|---|---|
+| NVMe SSD, 17,179,869,856 encoded bytes, input paced at 160 MB/s, 8 GiB pool | 159.93 MB/s including final flush; zero sink-buffer waits |
+| Same SSD run, peak RSS / swap / GC cycles | 8,418,808 KiB / 0 / 13 |
+| NVMe SSD, 8,589,935,261 bytes, input paced at 200 MB/s, 128 MiB pool | 194.11 MB/s; maximum sink-buffer wait 0.44 s |
+| HDD writer alone, 8 GiB of encrypted full slots, including final flush | 191.16 MB/s |
+| HDD complete decode/hash/encrypt/write path, 8,589,935,261 bytes, 128 MiB pool | 162.78 MB/s; maximum sink-buffer wait 1.44 s |
+
+Before asynchronous writeback, the same 8 GiB checkpoint workload on the SSD
+measured 154.69 MB/s with a 13.98 s sink-buffer wait. A short test that fits before
+the first checkpoint did not reveal that stall. Use the complete path and actual
+pool configuration for qualification. These samples do not guarantee whole-volume
+speed across different disk regions, competing I/O or SSD cache exhaustion. HDD
+throughput has little margin over LTO-6, so SSD capture followed by an offline
+image-to-image transfer remains the preferred workflow on this host.

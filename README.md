@@ -103,9 +103,12 @@ Use `stage unlock PATH` with a hidden prompt or `--password-file`; add
 
 `stage write` accepts `--image`, `--device`, or both. With both, it completes the
 image first and streams those same records to tape. A successful complete batch
-clears the stage immediately. Insert another member and use `tape sync --from`
-to copy its missing suffix. `tape sync --to` fills a sparse image without changing
-SQLite. `--prune` releases only image batches committed on every member. A durable
+clears the stage immediately. `replica sync` copies complete archives between
+devices and images using one source and one destination flag. For example,
+`replica sync --from-image cache.img --to-device /dev/sgN` copies a member's
+missing suffix. `replica sync --from-device /dev/sgN --to-image cache.img` fills
+a sparse image without changing SQLite. `--prune` releases only source image
+batches committed on every member after an image-to-device transfer. A durable
 physical replica is distinct from one that has been read-verified.
 
 Rules contain explicit include/exclude patterns. There are no built-in trash,

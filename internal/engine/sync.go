@@ -6,101 +6,151 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/thezzisu/taper/internal/catalog"
 	"github.com/thezzisu/taper/internal/format"
 	"github.com/thezzisu/taper/internal/media"
 )
 
+// SyncPlan contains only stable scope and identities, never fresh device samples.
 type SyncPlan struct {
-	Replica  ReplicaSet  `json:"replica"`
-	Tape     MediaMember `json:"tape"`
-	From     bool        `json:"from_image"`
-	Start    uint64      `json:"start_position"`
-	End      uint64      `json:"end_position"`
-	Archives []BatchMeta `json:"archives"`
+	Replica    ReplicaSet   `json:"replica"`
+	From       string       `json:"from"`
+	To         string       `json:"to"`
+	FromTape   *MediaMember `json:"from_tape,omitempty"`
+	ToTape     *MediaMember `json:"to_tape,omitempty"`
+	Start      uint64       `json:"start_position"`
+	End        uint64       `json:"end_position"`
+	Objects    uint64       `json:"objects"`
+	ImageBytes int64        `json:"image_write_bound_bytes,omitempty"`
+	Archives   []BatchMeta  `json:"archives"`
+	selector   string
 }
 type SyncResult struct {
-	Archives  []string `json:"archives"`
-	Start     uint64   `json:"start_position"`
-	End       uint64   `json:"end_position"`
-	Bytes     int64    `json:"encoded_bytes"`
-	Objects   uint64   `json:"objects"`
-	PrunedEnd uint64   `json:"pruned_end"`
+	Archives        []string      `json:"archives"`
+	Start           uint64        `json:"start_position"`
+	End             uint64        `json:"end_position"`
+	Bytes           int64         `json:"encoded_bytes"`
+	Objects         uint64        `json:"objects"`
+	PrunedEnd       uint64        `json:"pruned_end"`
+	LongestSinkWait time.Duration `json:"longest_sink_wait_ns"`
 }
 
-func PlanSync(s *catalog.Store, d media.Device, img *media.Image, spec string, from bool) (p SyncPlan, err error) {
-	p.From = from
-	p.Archives = []BatchMeta{}
+func syncMember(s *catalog.Store, d media.Device, r ReplicaSet, target bool) (MediaMember, media.Info, error) {
 	i, err := d.Info()
 	if err != nil {
-		return
+		return MediaMember{}, i, err
 	}
-	p.Tape, err = MemberForSerial(s, i.Serial)
+	m, err := MemberForSerial(s, i.Serial)
+	if err != nil {
+		return m, i, err
+	}
+	if m.Replica != r.ID {
+		return m, i, errors.New("cartridge belongs to another replica set")
+	}
+	if m.State == "open" {
+		raw, e := d.ReadIdentity()
+		if e != nil {
+			return m, i, e
+		}
+		l, e := decodeLabel(raw, i.Serial)
+		if e != nil {
+			return m, i, e
+		}
+		if l.ID != r.ID || l.KeyID != r.KeyID {
+			return m, i, errors.New("MAM identity differs from catalog")
+		}
+	} else if !target || m.State != "registered" {
+		return m, i, errors.New("cartridge is not ready for synchronization")
+	}
+	if target {
+		var incomplete int
+		if err = s.DB.QueryRow("SELECT COUNT(*) FROM replicas WHERE media_id=? AND state IN ('writing','failed')", m.ID).Scan(&incomplete); err != nil {
+			return m, i, err
+		}
+		if incomplete != 0 {
+			return m, i, errors.New("target tape has an incomplete write")
+		}
+		if err = checkMediaInfo(i); err != nil {
+			return m, i, err
+		}
+	}
+	return m, i, nil
+}
+
+// PlanSync uses only catalog, MAM and image bitmap facts. A nil destination
+// represents a new image, which the CLI creates only after scope approval.
+func PlanSync(s *catalog.Store, name string, source, target media.Device, spec string) (p SyncPlan, err error) {
+	p.Archives = []BatchMeta{}
+	p.selector = spec
+	if source == nil {
+		return p, errors.New("source endpoint is required")
+	}
+	if source == target {
+		return p, errors.New("source and destination are the same endpoint")
+	}
+	p.Replica, err = ResolveReplicaSet(s, name)
 	if err != nil {
 		return
 	}
-	p.Replica, err = ResolveReplicaSet(s, p.Tape.Replica)
-	if err != nil {
-		return
-	}
-	if img != nil && (img.ReplicaID != p.Replica.ID || img.KeyID != p.Replica.KeyID) {
-		return p, errors.New("image and tape replica/key identities differ")
-	}
-	if from && img == nil {
-		return p, errors.New("source image is required")
+	fromImage, _ := source.(*media.Image)
+	toImage, _ := target.(*media.Image)
+	p.From, p.To = "image", "image"
+	for _, img := range []*media.Image{fromImage, toImage} {
+		if img != nil && (img.ReplicaID != p.Replica.ID || img.KeyID != p.Replica.KeyID) {
+			return p, errors.New("image replica/key identity differs from catalog")
+		}
 	}
 	all, err := ListBatches(s, p.Replica.ID)
 	if err != nil {
 		return
 	}
-	prefix, err := MemberPrefix(s, p.Tape.ID, all)
-	if err != nil {
-		return
+	for len(all) > 0 && all[len(all)-1].State != "committed" {
+		all = all[:len(all)-1]
 	}
-	if from {
-		var incomplete int
-		if err = s.DB.QueryRow("SELECT COUNT(*) FROM replicas WHERE media_id=? AND state IN ('writing','failed')", p.Tape.ID).Scan(&incomplete); err != nil {
-			return
-		}
-		if incomplete > 0 {
-			return p, errors.New("target tape has an incomplete write")
-		}
-	}
-	if p.Tape.State == "open" {
-		l, e := ReadLabel(d)
+	available := all
+	if fromImage == nil {
+		p.From = "device"
+		m, _, e := syncMember(s, source, p.Replica, false)
 		if e != nil {
 			return p, e
 		}
-		if l.ID != p.Replica.ID || l.KeyID != p.Replica.KeyID {
-			return p, errors.New("MAM identity differs from catalog")
+		p.FromTape = &m
+		n, e := MemberPrefix(s, m.ID, all)
+		if e != nil {
+			return p, e
 		}
-	} else if !from || p.Tape.State != "registered" {
-		return p, errors.New("cartridge is not ready for this synchronization")
+		available = all[:n]
 	}
-	if !from {
-		all = all[:prefix]
-	} else {
-		for len(all) > 0 && all[len(all)-1].State != "committed" {
-			all = all[:len(all)-1]
+	prefix := 0
+	var targetInfo media.Info
+	if target != nil && toImage == nil {
+		p.To = "device"
+		m, i, e := syncMember(s, target, p.Replica, true)
+		if e != nil {
+			return p, e
+		}
+		p.ToTape, targetInfo = &m, i
+		if p.FromTape != nil && m.Serial == p.FromTape.Serial {
+			return p, errors.New("source and destination contain the same cartridge")
+		}
+		prefix, err = MemberPrefix(s, m.ID, all)
+		if err != nil {
+			return
 		}
 	}
-	selected, err := ParseArchiveRange(spec, all)
+	selected, err := ParseArchiveRange(spec, available)
 	if err != nil {
 		return
 	}
-	if from {
+	if p.To == "device" {
 		if spec == "" {
-			selected = all[prefix:]
+			selected = available[min(prefix, len(available)):]
 		} else if len(selected) > 0 && selected[0].Seq != prefix {
-			return p, fmt.Errorf("archive range must start at next unsynchronized batch %d", prefix)
+			return p, fmt.Errorf("archive range must start at destination's next batch %d", prefix)
 		}
-		for _, b := range selected {
-			if !img.HasRange(b.BeginPos, b.EndPos) {
-				return p, fmt.Errorf("source image lacks complete archive %s", b.ID)
-			}
-		}
-		limit, avail, e := i.Budget()
+		limit, avail, e := targetInfo.Budget()
 		if e != nil {
 			return p, e
 		}
@@ -110,35 +160,89 @@ func PlanSync(s *catalog.Store, d media.Device, img *media.Image, spec string, f
 			if b.EncodedBytes != nil {
 				n = *b.EncodedBytes
 			}
-			if n > budget {
+			if n <= 0 || n > budget {
 				return p, errors.New("selected archives exceed target tape budget")
 			}
 			budget -= n
 		}
-	} else {
-		// One forward pass from first missing archive to last missing archive. Cached
-		// intervening archives are consumed in that same pass, never read again later.
-		first, last := -1, -1
-		for n, b := range selected {
-			if img == nil || !img.HasRange(b.BeginPos, b.EndPos) {
-				if first < 0 {
-					first = n
+	}
+	// A sparse image source can offer complete, disjoint archives. Explicit
+	// ranges and physical destinations require every selected archive intact.
+	if fromImage != nil {
+		ready := make([]BatchMeta, 0, len(selected))
+		for _, b := range selected {
+			if !fromImage.HasRange(b.BeginPos, b.EndPos) {
+				if spec != "" || p.To == "device" {
+					return p, fmt.Errorf("source image lacks complete archive %s", b.ID)
 				}
-				last = n
+				continue
+			}
+			ready = append(ready, b)
+		}
+		selected = ready
+	}
+	if p.To == "image" {
+		if p.From == "device" {
+			// Keep one forward tape pass, including any cached middle archives.
+			first, last := -1, -1
+			for i, b := range selected {
+				if toImage == nil || !toImage.HasRange(b.BeginPos, b.EndPos) {
+					if first < 0 {
+						first = i
+					}
+					last = i
+				}
+			}
+			if first < 0 {
+				selected = nil
+			} else {
+				selected = selected[first : last+1]
+			}
+		} else {
+			missing := make([]BatchMeta, 0, len(selected))
+			for _, b := range selected {
+				if toImage == nil || !toImage.HasRange(b.BeginPos, b.EndPos) {
+					missing = append(missing, b)
+				}
+			}
+			selected = missing
+		}
+		for _, b := range selected {
+			if b.EndPos > media.ImageMaxObjects {
+				return p, errors.New("archive exceeds image bitmap capacity")
+			}
+			for pos := b.BeginPos; pos < b.EndPos; pos++ {
+				if toImage == nil || !toImage.HasObject(pos) {
+					p.ImageBytes += format.BlockSize
+				}
 			}
 		}
-		if first < 0 {
-			selected = nil
-		} else {
-			selected = selected[first : last+1]
+		if len(selected) > 0 {
+			p.ImageBytes += media.ImageHeaderSize
 		}
 	}
 	p.Archives = append(p.Archives, selected...)
 	if len(selected) > 0 {
-		p.Start = selected[0].BeginPos
-		p.End = selected[len(selected)-1].EndPos
+		p.Start, p.End = selected[0].BeginPos, selected[len(selected)-1].EndPos
+		if p.From == "device" {
+			p.Objects = p.End - p.Start
+		} else {
+			for i, b := range selected {
+				p.Objects += b.EndPos - imageReadStart(fromImage, selected, i)
+			}
+		}
 	}
 	return
+}
+
+// Preserve any native filemarks between consecutive cached archives without
+// making uncached prefixes a dependency of an image-to-image transfer.
+func imageReadStart(img *media.Image, archives []BatchMeta, i int) uint64 {
+	b := archives[i]
+	if i > 0 && archives[i-1].Seq+1 == b.Seq && img.HasRange(archives[i-1].EndPos, b.BeginPos) {
+		return archives[i-1].EndPos
+	}
+	return b.BeginPos
 }
 
 type limitedRecords struct {
@@ -153,6 +257,7 @@ func (r *limitedRecords) ReadRecordInto(b []byte) (int, error) {
 	r.left--
 	return r.source.ReadRecordInto(b)
 }
+
 func readExpected(ctx context.Context, r *sequentialReader, b BatchMeta, sink func([]byte, error) error) (int64, error) {
 	if r.position != b.BeginPos {
 		return 0, errors.New("archive start position differs")
@@ -246,28 +351,31 @@ func writeImageArchive(ctx context.Context, s *catalog.Store, d media.Device, im
 		})
 	})
 }
-func TapeSync(ctx context.Context, s *catalog.Store, d media.Device, img *media.Image, p SyncPlan, key []byte, prune bool, o ReadOptions) (out SyncResult, err error) {
+
+// ReplicaSync uses the same validating stream for all endpoint combinations.
+// Only a physical destination acquires the catalog writer lock and updates it.
+func ReplicaSync(ctx context.Context, s *catalog.Store, source, target media.Device, p SyncPlan, key []byte, prune bool, o ReadOptions) (out SyncResult, err error) {
 	out.Archives = []string{}
 	out.Start, out.End = p.Start, p.Start
-	if prune && !p.From {
-		return out, errors.New("--prune requires --from")
-	}
 	if err = ctx.Err(); err != nil {
 		return
 	}
-	var release func()
-	if p.From {
-		release, err = lockStage(s)
-		if err != nil {
-			return
+	fromImage, _ := source.(*media.Image)
+	toImage, _ := target.(*media.Image)
+	if target == nil {
+		return out, errors.New("destination endpoint is required")
+	}
+	if prune && (fromImage == nil || toImage != nil) {
+		return out, errors.New("--prune requires --from-image and --to-device")
+	}
+	if toImage == nil {
+		release, e := lockStage(s)
+		if e != nil {
+			return out, e
 		}
 		defer release()
 	}
-	spec := ""
-	if len(p.Archives) > 0 {
-		spec = p.Archives[0].ID + "-" + p.Archives[len(p.Archives)-1].ID
-	}
-	current, e := PlanSync(s, d, img, spec, p.From)
+	current, e := PlanSync(s, p.Replica.ID, source, target, p.selector)
 	if e != nil {
 		return out, e
 	}
@@ -276,8 +384,11 @@ func TapeSync(ctx context.Context, s *catalog.Store, d media.Device, img *media.
 	}
 	if len(p.Archives) == 0 {
 		if prune {
-			out.PrunedEnd, err = pruneImage(s, img, p.Replica.ID)
+			out.PrunedEnd, err = pruneImage(s, fromImage, p.Replica.ID)
 		}
+		return
+	}
+	if _, err = readPoolCount(o.Memory); err != nil {
 		return
 	}
 	k, e := ReplicaKey(s, p.Replica.ID, key)
@@ -285,91 +396,175 @@ func TapeSync(ctx context.Context, s *catalog.Store, d media.Device, img *media.
 		return out, e
 	}
 	defer clear(k)
-	if err = img.SetKey(k); err != nil {
+	if fromImage != nil {
+		err = fromImage.SetKey(k)
+	} else {
+		_, err = UnlockMedia(s, source, k)
+	}
+	if err != nil {
 		return
 	}
-	if p.From {
-		for _, b := range p.Archives {
-			if err = ctx.Err(); err != nil {
-				return
-			}
-			_, err = writeImageArchive(ctx, s, d, img, b, k, WriteOptions{Memory: o.Memory, Progress: func(n uint64, bytes int64) {
-				if o.Progress != nil {
-					o.Progress(out.Objects+n, out.Bytes+bytes)
-				}
-			}})
-			if err != nil {
-				return
-			}
-			out.Archives = append(out.Archives, b.ID)
-			out.End = b.EndPos
-			out.Objects += b.EndPos - b.BeginPos
-			var n int64
-			if err = s.DB.QueryRow("SELECT confirmed_bytes FROM replicas WHERE batch_id=? AND media_id=? AND state='committed'", b.ID, p.Tape.ID).Scan(&n); err != nil {
-				return
-			}
-			out.Bytes += n
+	if toImage != nil {
+		if err = toImage.SetKey(k); err != nil {
+			return
 		}
-		if prune {
-			out.PrunedEnd, err = pruneImage(s, img, p.Replica.ID)
+		if err = toImage.CheckSpace(p.ImageBytes); err != nil {
+			return
 		}
-		return
-	}
-	if _, err = UnlockMedia(s, d, k); err != nil {
-		return
-	}
-	if err = d.Locate(p.Start); err != nil {
-		return
-	}
-	pos, e := d.Position()
-	if e != nil || pos != p.Start {
-		return out, errors.Join(e, errors.New("read start position mismatch"))
-	}
-	r, e := newSequentialReader(ctx, &limitedRecords{source: d, left: p.End - p.Start}, p.Start, o.Memory)
-	if e != nil {
-		return out, e
-	}
-	r.progress = o.Progress
-	defer r.Close()
-	writePos := p.Start
-	sink := func(raw []byte, event error) error {
-		pos := writePos
-		writePos++
-		if img.HasObject(pos) {
-			return nil
+	} else {
+		// Finish target initialization/positioning before starting the source.
+		if _, err = CheckWriteTarget(s, target, p.Archives[0]); err != nil {
+			return
 		}
-		if e := img.Locate(pos); e != nil {
+		if _, err = prepareMedia(s, target, k); err != nil {
+			return
+		}
+		if err = target.End(); err != nil {
+			return
+		}
+		pos, e := target.Position()
+		if e != nil {
+			return out, e
+		}
+		all, e := ListBatches(s, p.Replica.ID)
+		if e != nil {
+			return out, e
+		}
+		previous := uint64(2)
+		if p.Archives[0].Seq > 0 {
+			previous = all[p.Archives[0].Seq-1].EndPos
+		}
+		if pos != previous && pos != p.Start {
+			return out, fmt.Errorf("target EOD %d differs from committed prefix %d", pos, previous)
+		}
+	}
+	var r *sequentialReader
+	defer func() {
+		if r != nil {
+			r.Close()
+			out.LongestSinkWait = max(out.LongestSinkWait, r.SinkWait)
+		}
+	}()
+	openReader := func(start, end uint64) error {
+		if e := source.Locate(start); e != nil {
 			return e
 		}
-		if event == media.ErrFilemark {
-			return img.Filemark()
+		pos, e := source.Position()
+		if e != nil {
+			return e
 		}
-		return img.WriteRecord(raw)
+		if pos != start {
+			return errors.New("source start position mismatch")
+		}
+		r, e = newSequentialReader(ctx, &limitedRecords{source: source, left: end - start}, start, o.Memory)
+		if e != nil {
+			return e
+		}
+		baseObjects, baseBytes := out.Objects, out.Bytes
+		r.progress = func(n uint64, bytes int64) {
+			if o.Progress != nil {
+				o.Progress(baseObjects+n, baseBytes+bytes)
+			}
+		}
+		return nil
 	}
-	for _, b := range p.Archives {
+	if fromImage == nil {
+		if err = openReader(p.Start, p.End); err != nil {
+			return
+		}
+	}
+	for i, b := range p.Archives {
+		if err = ctx.Err(); err != nil {
+			return
+		}
+		if fromImage != nil {
+			if err = openReader(imageReadStart(fromImage, p.Archives, i), b.EndPos); err != nil {
+				return
+			}
+		}
+		if toImage == nil {
+			if err = r.Fill(); err != nil {
+				return
+			}
+		}
+		writePos := r.position
+		sink := func(raw []byte, event error) error {
+			pos := writePos
+			writePos++
+			if toImage.HasObject(pos) {
+				return nil
+			}
+			if e := toImage.Locate(pos); e != nil {
+				return e
+			}
+			if event == media.ErrFilemark {
+				return toImage.Filemark()
+			}
+			return toImage.WriteRecord(raw)
+		}
 		for r.position < b.BeginPos {
 			if _, e = r.ReadRecord(); e != media.ErrFilemark {
 				return out, errors.New("inter-archive object is not a filemark")
 			}
-			if e = sink(nil, media.ErrFilemark); e != nil {
-				return out, e
+			if toImage != nil {
+				if err = sink(nil, media.ErrFilemark); err != nil {
+					return
+				}
 			}
 		}
-		n, e := readExpected(ctx, r, b, sink)
-		if e != nil {
-			return out, e
+		var n int64
+		if toImage != nil {
+			n, err = readExpected(ctx, r, b, sink)
+		} else {
+			member, e := CheckWriteTarget(s, target, b)
+			if e != nil {
+				return out, e
+			}
+			_, err = commitPositionedTapeBatch(s, target, b, member, func(dst media.Device) (int64, error) {
+				var e error
+				n, e = readExpected(ctx, r, b, func(raw []byte, event error) error {
+					if event == media.ErrFilemark {
+						return dst.Filemark()
+					}
+					return dst.WriteRecord(raw)
+				})
+				return n, e
+			})
+		}
+		if err != nil {
+			return
+		}
+		if toImage != nil {
+			if err = toImage.Flush(); err != nil {
+				return
+			}
 		}
 		out.Archives = append(out.Archives, b.ID)
 		out.End = b.EndPos
 		out.Bytes += n
+		if fromImage != nil {
+			r.Close()
+			out.LongestSinkWait = max(out.LongestSinkWait, r.SinkWait)
+			out.Objects += r.Reads
+			r = nil
+		} else {
+			out.Objects = b.EndPos - p.Start
+		}
 	}
-	r.Close()
-	out.Objects = p.End - p.Start
-	pos, e = d.Position()
-	if e != nil || pos != p.End {
-		return out, errors.Join(e, errors.New("read end position mismatch"))
+	if r != nil {
+		r.Close()
+		out.LongestSinkWait = max(out.LongestSinkWait, r.SinkWait)
+		pos, e := source.Position()
+		if e != nil {
+			return out, e
+		}
+		if pos != p.End {
+			return out, errors.New("source end position differs from planned range")
+		}
 	}
-	err = img.Flush()
+	if prune {
+		out.PrunedEnd, err = pruneImage(s, fromImage, p.Replica.ID)
+	}
 	return
 }
 func pruneImage(s *catalog.Store, img *media.Image, id string) (uint64, error) {

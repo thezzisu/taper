@@ -7,6 +7,7 @@ Help and shell completion never open a catalog or a drive.
 |---|---|
 | `replica create NAME` | Create a logical replica set with optional encryption |
 | `replica ls` | List sets and member counts |
+| `replica sync [NAME]` | Synchronize a replica stream between devices and sparse images |
 | `replica add [NAME] --device DEVICE` | Bind a cartridge using non-moving MAM queries |
 | `replica rm [NAME] (--device DEVICE \| --tape IDENTIFIER)` | Forget a member and its physical replica records |
 | `replica mount [NAME] MOUNTPOINT` | Mount original archived files read-only |
@@ -14,7 +15,6 @@ Help and shell completion never open a catalog or a drive.
 | `tape probe --device DEVICE` | Query current drive/MAM facts without moving tape |
 | `tape verify --device DEVICE [--archive FIRST[-LAST]]` | Verify the whole tape or one contiguous interval |
 | `tape reindex --device DEVICE` | Rebuild catalog records in one BOT-to-EOD pass |
-| `tape sync --device DEVICE (--from FILE \| --to FILE)` | Synchronize complete archives with a sparse image |
 | `tape eject --device DEVICE` | Rewind and unload once |
 | `stage add [PATH...]` | Add or refresh source selections |
 | `stage rm PATH...` | Unstage files; `.` clears an unstarted stage |
@@ -30,7 +30,7 @@ Help and shell completion never open a catalog or a drive.
 | `catalog rekey` | Change its passphrase |
 | `key generate --key-file FILE --keycard FILE` | Generate an independent replica key and recovery card |
 
-Omitting the set name in add/rm/mount/plan selects it only when exactly one set
+Omitting the set name in add/rm/mount/sync/plan selects it only when exactly one set
 exists. A previously bound stage retains its set. Cartridge labels are distinct
 from hardware serials and the optional human `--note`.
 
@@ -51,8 +51,10 @@ nodes or persistent symlinks.
   unless `-y/--yes` is supplied. `-n/--dry-run` never changes membership.
 - `replica mount`: `--image`, `--device`, or both; `--archive`, `--min-blocks`
   (256), `--memory`, `--key-file`. Direct FUSE needs external mount permission.
-- `tape sync`: `--from` or `--to`, `--archive`, `--prune` (from only), `--memory`,
-  `--key-file`. Prune releases only batches durably present on all members.
+- `replica sync`: exactly one of `--from-device` / `--from-image` and exactly one
+  of `--to-device` / `--to-image`; `--archive`, `--memory`, `--key-file`.
+  `--prune` requires image-to-device transfer and releases only batches durably
+  present on all members. A new destination image is created after confirmation.
 - `tape verify`: `--archive`, `--memory`, `--key-file`.
 - `tape reindex`: `--memory`, `--key-file`; when recovering an unknown set,
   `--hardware-compression` must explicitly give its future write preference.
@@ -72,10 +74,10 @@ external tasks.
 
 ## Selectors, output and confirmation
 
-Tape range `--archive` accepts a full 32-hex ID or a unique prefix of at least six hex digits:
+The optional range filter `--archive` accepts a full 32-hex ID or a unique prefix of at least six hex digits:
 `FIRST`, `FIRST-LAST`, `FIRST-`, `-LAST`. Use `--archive=-LAST` when needed for
 shell/flag clarity. Endpoints belong to the selected set or available tape
-prefix, are inclusive, and cannot be reversed. Sync-from must start at the
+prefix, are inclusive, and cannot be reversed. A transfer to a device must start at the
 member's next missing batch. Verify includes native inter-archive filemarks;
 selecting the member's last archive adds exactly one EOD check.
 

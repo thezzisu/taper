@@ -52,11 +52,16 @@ header/payload CRCs are checked after decryption. This is not an AEAD format.
 Records and stream identities are immutable, including across interrupted stage
 writes; changing plaintext under an existing key/LBA nonce is prohibited.
 
-Slot bytes are written first. At a bounded checkpoint (64 records, a filemark,
-Flush or Close), fdatasync completes before bitmap/superblock publication and
-fsync. Pending coverage may be served in the same process. No per-record header
-rewrite or SQLite checkpoint is needed. Invalid superblocks/headers fail closed;
-an interrupted unpublished tail must be inspected locally before retrying.
+The writer reuses a 4 MiB buffer and combines adjacent full slots into sequential
+writes. Short records keep sparse slot tails, and a nonadjacent write drains
+buffered data. Non-blocking Linux writeback requests keep payload I/O moving
+between checkpoints; they do not publish coverage or establish durability.
+At each 4 GiB of encoded data, filemark, Flush or Close, the buffer drains and
+fdatasync completes before bitmap/superblock publication and fsync. Pending
+coverage is readable from memory in the same process. A crash can lose
+unpublished coverage since the last checkpoint. No per-record bitmap write or
+SQLite checkpoint is needed. Invalid superblocks/headers fail closed; an
+interrupted unpublished tail must be inspected locally before retrying.
 Hole punching first durably withdraws bitmap coverage, then uses
 `FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE`, preventing published entries from
 pointing to discarded data after a crash. Images hold an exclusive writer lock
@@ -70,7 +75,7 @@ taper replica add cold --device /dev/sgN --label 123456L6 --note 'Shelf 2'
 taper stage add --source /stable/source
 taper stage plan --replica cold --name first
 taper stage write --image /cache/cold.img
-taper tape sync --device /dev/sgN --from /cache/cold.img
+taper replica sync --from-image /cache/cold.img --to-device /dev/sgN
 ```
 
 `stage write` accepts an image, a device, or both. With both, it prepares the
@@ -79,23 +84,53 @@ are read once. A committed image archive advances the set stream but creates no
 physical replica. The stage clears immediately after successful completion.
 A reserved stream with an interrupted output remains blocked against restaging.
 
-Insert another registered member and repeat `tape sync --from`. Default selection
-is its missing committed suffix. `--archive FIRST[-LAST]` must start at that
+Insert another registered member and repeat the image-to-device command. Default
+selection is its missing committed suffix. `--archive FIRST[-LAST]` must start at that
 member's next missing batch; all selected image batches must be complete.
 Each successful filemark commits a separate physical replica in SQLite. Existing
 prefixes are not reread. Neither verification nor ejection is automatic.
 
-`tape sync --to` opens SQLite read-only and captures the selected available
-archives into an image. It reads once from the first incomplete image archive
+`replica sync --from-device ... --to-image ...` opens SQLite read-only and captures
+the selected available archives into an image. It reads once from the first incomplete image archive
 through the last incomplete one, validating controls, DATA CRCs, content digests
 and filemarks. Cached intervening archives are passed through in that same read.
 A fully cached selection is a no-op. No capacity or verification observations
 are written to SQLite by this operation.
 
-`--prune` applies only to `--from` and releases image batches committed on every
-current member. Membership alone is not proof of a prefix: per-replica positions
+`--prune` requires `--from-image` and `--to-device` and releases image batches
+committed on every current member. Membership alone is not proof of a prefix: per-replica positions
 and archive IDs must match. A missing member prefix prevents pruning. Pruning
 uses durable-write evidence, not an assertion that every replica was read-verified.
+
+`replica sync --from-image /ssd/cold.img --to-image /hdd/cold.img` merges
+complete cached archives into another sparse image using the same decode/hash
+pipeline. The catalog is opened read-only. With no selector it copies complete
+source archives missing from the destination; a partial source archive is never
+advertised as complete. An explicit archive range must be fully available in the
+source. Destination holes are filled, cached records are retained, and record
+addresses and encoded bytes stay identical. SQLite never tracks either path.
+
+`replica sync --from-device /dev/sgA --to-device /dev/sgB` supports two drives.
+Both cartridges must belong to the selected set, and the destination must receive
+its next complete batches. The destination is initialized/positioned before the
+source starts; the source then uses one bounded forward read with no retry or
+verification pass. The destination commits each batch only after its filemark.
+Throughput depends on both drives; an insufficient sink still exhausts a finite
+read pool, so direct drive copies require operator qualification.
+
+Specify exactly one source and one destination flag. Same files (including hard
+links) and same cartridges are rejected. All modes preview their endpoints and
+archive ranges. A transfer that moves a tape asks once; image-only transfers and
+already synchronized no-ops do not prompt. `--dry-run` never creates an image or
+changes keys/modes. Physical queries during planning are non-moving.
+
+For SSD staging, capture a complete selected range into the SSD image, then run
+an image-to-image transfer to the HDD after tape reading ends. Free space is
+checked against missing 1 MiB slots before a tape moves. This is a conservative
+allocation bound; apparent image size includes holes preceding a late archive
+and can greatly exceed occupied disk space. Space can still change concurrently.
+Deleting a disposable SSD cache after the HDD transfer is an operator action;
+image-to-image sync never prunes it automatically.
 
 ## Budgets and settings
 

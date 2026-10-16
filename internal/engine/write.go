@@ -122,7 +122,7 @@ func WriteArchive(ctx context.Context, s *catalog.Store, d media.Device, m Manif
 		return "", e
 	}
 	if state != "planned" {
-		return "", errors.New("source writing requires an unstarted plan; copy committed streams with tape sync")
+		return "", errors.New("source writing requires an unstarted plan; copy committed streams with replica sync")
 	}
 	info, e := d.Info()
 	if e != nil {
@@ -159,6 +159,12 @@ func commitTapeBatch(s *catalog.Store, d media.Device, b BatchMeta, key []byte, 
 	if err = d.End(); err != nil {
 		return
 	}
+	return commitPositionedTapeBatch(s, d, b, member, write)
+}
+
+// Synchronization positions and prepares its target once before source reads.
+// Subsequent complete batches append at the position confirmed by this writer.
+func commitPositionedTapeBatch(s *catalog.Store, d media.Device, b BatchMeta, member MediaMember, write func(media.Device) (int64, error)) (rep string, err error) {
 	pos, err := d.Position()
 	if err != nil {
 		return

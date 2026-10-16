@@ -91,7 +91,7 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 	if o.json && *tui {
 		return errors.New("--json cannot be combined with --tui")
 	}
-	if (command == "tape verify" || command == "tape reindex" || command == "stage write" || command == "tape sync" || command == "replica mount") && (*memory < 8<<20 || *memory > engine.MaxMemory) {
+	if (command == "tape verify" || command == "tape reindex" || command == "stage write" || command == "replica sync" || command == "replica mount") && (*memory < 8<<20 || *memory > engine.MaxMemory) {
 		return errors.New("--memory must be between 8388608 and 68719476736 bytes")
 	}
 	if command == "key generate" {
@@ -199,7 +199,7 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 	var s *catalog.Store
 	if command == "catalog init" {
 		s, e = catalog.Create(db, pass)
-	} else if o.dryRun || command == "tape sync" && o.to != "" || command == "replica mount" || command == "tape ls" || command == "replica ls" || strings.HasPrefix(command, "archive ") || command == "stage ls" {
+	} else if o.dryRun || command == "replica sync" && o.toImage != "" || command == "replica mount" || command == "tape ls" || command == "replica ls" || strings.HasPrefix(command, "archive ") || command == "stage ls" {
 		s, e = catalog.OpenReadOnly(db, pass)
 	} else {
 		s, e = catalog.Open(db, pass)
@@ -268,7 +268,7 @@ func execute(ctx context.Context, command string, paths []string, o *settings, c
 		return e
 	}
 	defer clear(key)
-	if command == "replica create" || command == "replica ls" || command == "replica add" || command == "replica rm" || command == "replica mount" || command == "tape sync" || command == "tape verify" || command == "tape reindex" || command == "stage write" {
+	if command == "replica create" || command == "replica ls" || command == "replica add" || command == "replica rm" || command == "replica mount" || command == "replica sync" || command == "tape verify" || command == "tape reindex" || command == "stage write" {
 		return executeMedia(ctx, command, paths, o, c, s, key)
 	}
 	if command == "archive ls" {

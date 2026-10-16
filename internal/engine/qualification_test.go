@@ -83,12 +83,12 @@ func TestStreamingImageQualification(t *testing.T) {
 	}
 	defer dest.Close()
 	source := &pacedImageSource{Device: d}
-	plan, e := PlanSync(s, source, dest, "", false)
+	plan, e := PlanSync(s, "", source, dest, "")
 	if e != nil {
 		t.Fatal(e)
 	}
 	started = time.Now()
-	result, e := TapeSync(context.Background(), s, source, dest, plan, nil, false, ReadOptions{Memory: memory})
+	result, e := ReplicaSync(context.Background(), s, source, dest, plan, nil, false, ReadOptions{Memory: memory})
 	if e != nil {
 		t.Fatal(e)
 	}

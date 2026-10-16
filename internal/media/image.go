@@ -21,6 +21,8 @@ import (
 const ImageHeaderSize = 1 << 20
 const imageSuperSize = 4096
 const ImageMaxObjects = uint64((ImageHeaderSize - imageSuperSize) * 4)
+const imageWriteWindow = 4 << 20
+const imageCheckpointBytes = 4 << 30
 
 // ErrMissing is a hole inside an image, never a tape EOD event.
 var ErrMissing = errors.New("image object is unavailable")
@@ -39,9 +41,10 @@ type Image struct {
 	pos, maxPos          uint64
 	bitmap               []byte
 	dirtyStart, dirtyEnd int
-	pending              int
+	unpublishedBytes     int64
 	failed               error
-	scratch              []byte
+	writeBuf             []byte
+	writeStart           uint64
 }
 
 // OpenImage requires an expected identity. It creates new writable files but
@@ -168,7 +171,6 @@ func (v *Image) set(p uint64, state byte) {
 	}
 	v.dirtyEnd = max(v.dirtyEnd, j+1)
 	v.maxPos = max(v.maxPos, p+1)
-	v.pending++
 }
 func slot(p uint64) int64 { return int64(p+1) << 20 }
 func (v *Image) available(write bool) error {
@@ -284,7 +286,11 @@ func (v *Image) readAt(p uint64, b []byte) (int, error) {
 	if len(b) < format.BlockSize {
 		return 0, errors.New("record buffer must be at least 1 MiB")
 	}
-	if _, e := v.f.ReadAt(b[:64], slot(p)); e != nil {
+	off := slot(p) - slot(v.writeStart)
+	buffered := off >= 0 && off < int64(len(v.writeBuf))
+	if buffered {
+		copy(b[:64], v.writeBuf[off:off+64])
+	} else if _, e := v.f.ReadAt(b[:64], slot(p)); e != nil {
 		return 0, fmt.Errorf("truncated image record header: %w", e)
 	}
 	stored := binary.LittleEndian.Uint32(b[44:48])
@@ -292,7 +298,12 @@ func (v *Image) readAt(p uint64, b []byte) (int, error) {
 		return 0, errors.New("invalid image record length")
 	}
 	n := int(stored) + 64
-	if _, e := v.f.ReadAt(b[64:n], slot(p)+64); e != nil {
+	if buffered {
+		if off+int64(n) > int64(len(v.writeBuf)) {
+			return 0, errors.New("truncated buffered record")
+		}
+		copy(b[64:n], v.writeBuf[off+64:off+int64(n)])
+	} else if _, e := v.f.ReadAt(b[64:n], slot(p)+64); e != nil {
 		return 0, fmt.Errorf("truncated image record: %w", e)
 	}
 	if e := v.transform(b[:n], p); e != nil {
@@ -322,6 +333,10 @@ func (v *Image) ReadRecord() ([]byte, error) {
 	n, e := v.ReadRecordInto(b)
 	return b[:n], e
 }
+
+// WriteRecord copies encrypted frames into a reusable sequential buffer. Short
+// records keep their sparse slot tails; nonadjacent writes drain the buffer.
+// Pending records are visible to this Image before durable bitmap publication.
 func (v *Image) WriteRecord(b []byte) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -337,24 +352,74 @@ func (v *Image) WriteRecord(b []byte) error {
 	if v.state(v.pos) != 0 {
 		return errors.New("image object already present; existing records are immutable")
 	}
-	if cap(v.scratch) < len(b) {
-		v.scratch = make([]byte, format.BlockSize)
+	if len(v.writeBuf) > 0 && (slot(v.pos) != slot(v.writeStart)+int64(len(v.writeBuf)) || len(v.writeBuf)+len(b) > imageWriteWindow) {
+		if e := v.drain(); e != nil {
+			return e
+		}
 	}
-	copy(v.scratch, b)
-	out := v.scratch[:len(b)]
-	if e := v.transform(out, v.pos); e != nil {
-		return e
+	if v.writeBuf == nil {
+		v.writeBuf = make([]byte, 0, imageWriteWindow)
 	}
-	if e := writeAt(v.f, out, slot(v.pos)); e != nil {
-		v.failed = e
+	if len(v.writeBuf) == 0 {
+		v.writeStart = v.pos
+	}
+	off := len(v.writeBuf)
+	v.writeBuf = append(v.writeBuf, b...)
+	if e := v.transform(v.writeBuf[off:], v.pos); e != nil {
+		v.writeBuf = v.writeBuf[:off]
 		return e
 	}
 	v.set(v.pos, 1)
 	v.pos++
-	// Only publication is batched; payload durability always precedes disk bitmap.
-	if v.pending >= 64 {
+	v.unpublishedBytes += int64(len(b))
+	if len(v.writeBuf) == cap(v.writeBuf) {
+		if e := v.drain(); e != nil {
+			return e
+		}
+	}
+	if v.unpublishedBytes >= imageCheckpointBytes {
 		return v.flush()
 	}
+	return nil
+}
+
+// CheckSpace rejects a read-only/full destination before a source tape moves.
+// needed is a conservative allocation bound, not the image's sparse file size.
+func (v *Image) CheckSpace(needed int64) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if err := v.available(true); err != nil {
+		return err
+	}
+	if needed < 0 {
+		return errors.New("invalid image allocation bound")
+	}
+	var fs unix.Statfs_t
+	if err := unix.Fstatfs(int(v.f.Fd()), &fs); err != nil {
+		return err
+	}
+	available := fs.Bavail * uint64(fs.Bsize)
+	if uint64(needed) > available {
+		return fmt.Errorf("image needs at most %d additional bytes; filesystem has %d available", needed, available)
+	}
+	return nil
+}
+
+func (v *Image) drain() error {
+	if len(v.writeBuf) == 0 {
+		return nil
+	}
+	if e := writeAt(v.f, v.writeBuf, slot(v.writeStart)); e != nil {
+		v.failed = e
+		return e
+	}
+	// Start payload writeback while incoming records are processed. This is a
+	// scheduling hint, not durability: flush still fsyncs data before coverage.
+	if e := unix.SyncFileRange(int(v.f.Fd()), slot(v.writeStart), int64(len(v.writeBuf)), unix.SYNC_FILE_RANGE_WRITE); e != nil {
+		v.failed = e
+		return e
+	}
+	v.writeBuf = v.writeBuf[:0]
 	return nil
 }
 func (v *Image) Filemark() error {
@@ -382,6 +447,9 @@ func (v *Image) flush() (err error) {
 			v.failed = err
 		}
 	}()
+	if err = v.drain(); err != nil {
+		return
+	}
 	if err = unix.Fdatasync(int(v.f.Fd())); err != nil {
 		return
 	}
@@ -396,7 +464,7 @@ func (v *Image) flush() (err error) {
 	}
 	v.dirtyStart = -1
 	v.dirtyEnd = 0
-	v.pending = 0
+	v.unpublishedBytes = 0
 	return nil
 }
 func (v *Image) Flush() error { v.mu.Lock(); defer v.mu.Unlock(); return v.flush() }
@@ -459,7 +527,8 @@ func (v *Image) Close() error {
 	e := v.flush()
 	clear(v.key)
 	v.key = nil
-	clear(v.scratch)
+	clear(v.writeBuf)
+	v.writeBuf = nil
 	e = errors.Join(e, v.f.Close())
 	v.f = nil
 	return e

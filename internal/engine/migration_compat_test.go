@@ -129,11 +129,11 @@ func TestPhysicalV1FixtureAfterSQLMigration(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer image.Close()
-	p, e := PlanSync(s, d, image, "", false)
+	p, e := PlanSync(s, oldMedia, d, image, "")
 	if e != nil {
 		t.Fatal(e)
 	}
-	if _, e = TapeSync(context.Background(), s, d, image, p, nil, false, ReadOptions{Memory: 8 << 20}); e != nil {
+	if _, e = ReplicaSync(context.Background(), s, d, image, p, nil, false, ReadOptions{Memory: 8 << 20}); e != nil {
 		t.Fatal(e)
 	}
 	set, e := ResolveReplicaSet(s, oldMedia)
@@ -141,11 +141,11 @@ func TestPhysicalV1FixtureAfterSQLMigration(t *testing.T) {
 		t.Fatal(e)
 	}
 	other := secondMember(t, s, set)
-	p, e = PlanSync(s, other, image, "", true)
+	p, e = PlanSync(s, oldMedia, image, other, "")
 	if e != nil {
 		t.Fatal(e)
 	}
-	if _, e = TapeSync(context.Background(), s, other, image, p, nil, false, ReadOptions{Memory: 8 << 20}); e != nil {
+	if _, e = ReplicaSync(context.Background(), s, image, other, p, nil, false, ReadOptions{Memory: 8 << 20}); e != nil {
 		t.Fatal(e)
 	}
 	d.Locate(2)

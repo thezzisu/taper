@@ -291,7 +291,7 @@ func TestSyncDryRunDoesNotCreateImage(t *testing.T) {
 	c := newCommand()
 	c.SetOut(&out)
 	c.SetErr(&out)
-	c.SetArgs([]string{"tape", "sync", "--catalog", db, "--pass-file", pass, "--device", tape, "--to", image, "--dry-run", "--json"})
+	c.SetArgs([]string{"replica", "sync", "--catalog", db, "--pass-file", pass, "--from-device", tape, "--to-image", image, "--dry-run", "--json"})
 	if e = c.Execute(); e != nil {
 		t.Fatal(e)
 	}
@@ -303,5 +303,102 @@ func TestSyncDryRunDoesNotCreateImage(t *testing.T) {
 	}
 	if last.reads+last.locates+last.keys != 0 {
 		t.Fatal("dry run moved tape")
+	}
+}
+
+func TestReplicaSyncEndpointWorkflow(t *testing.T) {
+	original := openTape
+	opens := 0
+	openTape = func(p string, w bool) (media.Device, error) { opens++; return media.OpenSim(p, w) }
+	defer func() { openTape = original }()
+	dir := t.TempDir()
+	db, pass := filepath.Join(dir, "catalog.db"), filepath.Join(dir, "pass")
+	if e := os.WriteFile(pass, []byte("sync cli"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("TAPER_CATALOG", db)
+	t.Setenv("TAPER_PASS_FILE", pass)
+	call := func(args ...string) (string, error) {
+		c := newCommand()
+		var out, stderr bytes.Buffer
+		c.SetOut(&out)
+		c.SetErr(&stderr)
+		c.SetIn(strings.NewReader(""))
+		c.SetArgs(args)
+		err := c.Execute()
+		return out.String(), err
+	}
+	must := func(args ...string) string {
+		t.Helper()
+		out, e := call(args...)
+		if e != nil {
+			t.Fatal(args, e)
+		}
+		if !json.Valid([]byte(out)) {
+			t.Fatal("invalid JSON", out)
+		}
+		return out
+	}
+	must("catalog", "init", "--json")
+	key := filepath.Join(dir, "key")
+	must("key", "generate", "--key-file", key, "--keycard", filepath.Join(dir, "card"), "--json")
+	must("replica", "create", "set", "--key-file", key, "--json")
+	sourceTape, targetTape := filepath.Join(dir, "source.tape"), filepath.Join(dir, "target.tape")
+	for _, file := range []string{sourceTape, targetTape} {
+		if e := media.CreateSim(file, 8<<30, false); e != nil {
+			t.Fatal(e)
+		}
+		must("replica", "add", "--device", file, "--json")
+	}
+	root := filepath.Join(dir, "source")
+	if e := os.Mkdir(root, 0700); e != nil {
+		t.Fatal(e)
+	}
+	if e := os.WriteFile(filepath.Join(root, "hello"), []byte("replica endpoint flow"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	must("stage", "add", "--source", root, "--json")
+	must("stage", "plan", "--json")
+	ssd, hdd, capture := filepath.Join(dir, "ssd.img"), filepath.Join(dir, "hdd.img"), filepath.Join(dir, "capture.img")
+	must("stage", "write", "--image", ssd, "--memory", "8388608", "--json")
+	before, _ := os.ReadFile(db)
+	priorOpens := opens
+	for _, args := range [][]string{
+		{"replica", "sync", "--from-image", ssd, "--to-image", hdd, "-n", "--json"},
+		{"replica", "sync", "--from-image", ssd, "--to-image", hdd, "-n"},
+	} {
+		out, e := call(args...)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if !strings.Contains(out, ssd) || !strings.Contains(out, hdd) {
+			t.Fatal("endpoints missing from preview", out)
+		}
+		if _, e = os.Stat(hdd); !os.IsNotExist(e) {
+			t.Fatal("dry-run created destination")
+		}
+	}
+	must("replica", "sync", "--from-image", ssd, "--to-image", hdd, "--memory", "8388608", "--json")
+	after, _ := os.ReadFile(db)
+	if opens != priorOpens || !bytes.Equal(before, after) {
+		t.Fatal("image-only sync accessed tape or changed catalog")
+	}
+	must("replica", "sync", "--from-image", ssd, "--to-device", sourceTape, "-y", "--memory", "8388608", "--json")
+	must("replica", "sync", "--from-device", sourceTape, "--to-device", targetTape, "-y", "--memory", "8388608", "--json")
+	must("replica", "sync", "--from-device", targetTape, "--to-image", capture, "-y", "--memory", "8388608", "--json")
+	// A second capture is a no-op and needs no wear confirmation even on pipes.
+	must("replica", "sync", "--from-device", targetTape, "--to-image", capture, "--memory", "8388608", "--json")
+	if _, e := call("replica", "sync", "--from-image", ssd, "--to-image", ssd, "-n"); e == nil {
+		t.Fatal("same endpoint accepted")
+	}
+	link := filepath.Join(dir, "same.img")
+	if e := os.Link(ssd, link); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := call("replica", "sync", "--from-image", ssd, "--to-image", link); e == nil {
+		t.Fatal("hardlink endpoint accepted")
+	}
+	if _, e := call("replica", "sync", "--from-image", ssd, "--to-image", hdd, "--prune"); e == nil {
+		t.Fatal("image-only prune accepted")
 	}
 }

@@ -42,6 +42,49 @@ func scope(c *cobra.Command, o *settings, m *engine.MediaMember, replica, action
 	}
 	return ui.Table(w, []string{"SEQ", "ARCHIVE ID", "OBJECTS", "NAME"}, rows)
 }
+
+func replicaSyncScope(c *cobra.Command, o *settings, p engine.SyncPlan, from, to string) error {
+	w := c.ErrOrStderr()
+	if o.dryRun {
+		w = c.OutOrStdout()
+	}
+	if p.FromTape != nil {
+		if err := ui.TapeHeader(w, p.FromTape.Label, p.FromTape.Serial, from); err != nil {
+			return err
+		}
+	}
+	if p.ToTape != nil {
+		if err := ui.TapeHeader(w, p.ToTape.Label, p.ToTape.Serial, to); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(w, "Action     : Synchronize replica stream\n")
+	fmt.Fprintf(w, "Replica    : %s\n", ui.Safe(p.Replica.Name))
+	fmt.Fprintf(w, "From       : %s\n", ui.Safe(endpointText(p.From, from)))
+	fmt.Fprintf(w, "To         : %s\n", ui.Safe(endpointText(p.To, to)))
+	if p.To == "image" {
+		fmt.Fprintf(w, "Allocation : At most %d additional bytes\n", p.ImageBytes)
+	}
+	if o.prune {
+		fmt.Fprintln(w, "Prune      : Source image batches committed on every member")
+	}
+	if len(p.Archives) == 0 {
+		_, err := fmt.Fprintln(w, "No archives require synchronization.")
+		return err
+	}
+	rows := make([]ui.Row, 0, len(p.Archives))
+	for _, b := range p.Archives {
+		rows = append(rows, ui.Row{Cells: []string{strconv.Itoa(b.Seq), b.ID, fmt.Sprintf("%d-%d", b.BeginPos, b.EndPos-1), ui.Safe(b.Name)}})
+	}
+	return ui.Table(w, []string{"SEQ", "ARCHIVE ID", "OBJECTS", "NAME"}, rows)
+}
+
+func endpointText(kind, value string) string {
+	if value == "" {
+		return kind
+	}
+	return kind + " " + value
+}
 func executeMedia(ctx context.Context, command string, paths []string, o *settings, c *cobra.Command, s *catalog.Store, key []byte) error {
 	output := func(v any) error { return renderResult(c.OutOrStdout(), command, o.device, v, o.json) }
 	switch command {
@@ -179,8 +222,8 @@ func executeMedia(ctx context.Context, command string, paths []string, o *settin
 			e = oe
 		}
 		return e
-	case "tape sync":
-		return executeSync(ctx, o, c, s, key)
+	case "replica sync":
+		return executeReplicaSync(ctx, o, c, s, key, paths)
 	case "stage write":
 		st, e := engine.LoadStage(s)
 		if e != nil {
@@ -249,86 +292,100 @@ func executeMedia(ctx context.Context, command string, paths []string, o *settin
 	}
 	return fmt.Errorf("unsupported operation %s", command)
 }
-func executeSync(ctx context.Context, o *settings, c *cobra.Command, s *catalog.Store, key []byte) error {
-	if o.prune && o.from == "" {
-		return errors.New("--prune requires --from")
+func executeReplicaSync(ctx context.Context, o *settings, c *cobra.Command, s *catalog.Store, key []byte, paths []string) (err error) {
+	name := ""
+	if len(paths) == 1 {
+		name = paths[0]
 	}
-	from := o.from != ""
-	d, e := device(o.device, from && !o.dryRun)
-	if e != nil {
-		return e
+	if o.prune && (o.fromImage == "" || o.toDevice == "") {
+		return errors.New("--prune requires --from-image and --to-device")
 	}
-	defer d.Close()
-	i, e := d.Info()
-	if e != nil {
-		return e
+	r, err := engine.ResolveReplicaSet(s, name)
+	if err != nil {
+		return err
 	}
-	member, e := engine.MemberForSerial(s, i.Serial)
-	if e != nil {
-		return e
+	fromPath, toPath := o.fromDevice, o.toDevice
+	if o.fromImage != "" {
+		fromPath = o.fromImage
 	}
-	r, e := engine.ResolveReplicaSet(s, member.Replica)
-	if e != nil {
-		return e
+	if o.toImage != "" {
+		toPath = o.toImage
 	}
-	file := o.to
-	if from {
-		file = o.from
+	if fromPath == "" || toPath == "" {
+		return errors.New("source and destination paths must not be empty")
 	}
-	// The sync image is a positional source/destination rather than the generic
-	// --image flag; expose it in the same human scope header.
-	previousImage := o.image
-	o.image = file
-	defer func() { o.image = previousImage }()
-	var img *media.Image
-	// A new destination is created only after confirmation. Existing sources are
-	// never auto-created, including dry-run and image-to-tape sync.
-	if _, e = os.Stat(file); e == nil {
-		img, e = media.OpenImage(file, !o.dryRun && (!from || o.prune), r.ID, r.KeyID)
-		if e != nil {
-			return e
+	fromInfo, err := os.Stat(fromPath)
+	if err != nil {
+		return err
+	}
+	toInfo, toErr := os.Stat(toPath)
+	if toErr != nil && !os.IsNotExist(toErr) {
+		return toErr
+	}
+	if toErr == nil && os.SameFile(fromInfo, toInfo) {
+		return errors.New("source and destination refer to the same file or device")
+	}
+	var source, target media.Device
+	if o.fromImage != "" {
+		if fromInfo.Size() == 0 {
+			return errors.New("source image is empty")
 		}
-		defer img.Close()
-	} else if from || !os.IsNotExist(e) {
-		return e
+		source, err = media.OpenImage(fromPath, o.prune && !o.dryRun, r.ID, r.KeyID)
+	} else {
+		source, err = device(fromPath, false)
 	}
-	p, e := engine.PlanSync(s, d, img, o.archive, from)
-	if e != nil {
-		return e
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, source.Close()) }()
+	if o.toDevice != "" {
+		target, err = device(toPath, !o.dryRun)
+	} else if toErr == nil && toInfo.Size() != 0 {
+		target, err = media.OpenImage(toPath, !o.dryRun, r.ID, r.KeyID)
+	}
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if target != nil {
+			err = errors.Join(err, target.Close())
+		}
+	}()
+	plan, err := engine.PlanSync(s, r.ID, source, target, o.archive)
+	if err != nil {
+		return err
 	}
 	if o.dryRun && o.json {
-		return renderResult(c.OutOrStdout(), "tape sync", o.device, map[string]any{"plan": p, "image": file}, true)
+		return renderResult(c.OutOrStdout(), "replica sync", "", map[string]any{"plan": plan, "source": fromPath, "destination": toPath, "prune": o.prune}, true)
 	}
-	action := "Capture tape to image"
-	if from {
-		action = "Sync image to tape"
-	}
-	if e = scope(c, o, &member, r.Name, action, p.Archives); e != nil {
-		return e
+	if err = replicaSyncScope(c, o, plan, fromPath, toPath); err != nil {
+		return err
 	}
 	if o.dryRun {
 		return nil
 	}
-	if len(p.Archives) > 0 {
-		if e = confirm(c, o); e != nil {
-			return e
+	if len(plan.Archives) > 0 && (o.fromDevice != "" || o.toDevice != "") {
+		if err = confirm(c, o); err != nil {
+			return err
 		}
 	}
-	if img == nil {
-		img, e = media.OpenImage(file, true, r.ID, r.KeyID)
-		if e != nil {
-			return e
+	if target == nil {
+		if len(plan.Archives) == 0 {
+			return renderResult(c.OutOrStdout(), "replica sync", "", engine.SyncResult{Archives: []string{}}, o.json)
 		}
-		defer img.Close()
+		target, err = media.OpenImage(toPath, true, r.ID, r.KeyID)
+		if err != nil {
+			return err
+		}
 	}
-	progress := ui.NewProgress(c.ErrOrStderr(), "Synchronizing", int64(p.End-p.Start))
-	out, e := engine.TapeSync(ctx, s, d, img, p, key, o.prune, engine.ReadOptions{Memory: o.memory, Progress: progress.Update})
+	progress := ui.NewProgress(c.ErrOrStderr(), "Synchronizing", int64(plan.Objects))
+	out, err := engine.ReplicaSync(ctx, s, source, target, plan, key, o.prune, engine.ReadOptions{Memory: o.memory, Progress: progress.Update})
 	progress.SetFinal(out.Objects, out.Bytes)
-	progress.Close(e == nil)
-	if oe := renderResult(c.OutOrStdout(), "tape sync", o.device, out, o.json); e == nil {
-		e = oe
+	progress.Close(err == nil)
+	if e := renderResult(c.OutOrStdout(), "replica sync", "", out, o.json); err == nil {
+		err = e
 	}
-	return e
+	return err
 }
 func executeMount(ctx context.Context, o *settings, c *cobra.Command, s *catalog.Store, key []byte, paths []string) error {
 	name := ""

@@ -190,3 +190,116 @@ func TestImageCiphertextIdentityAndCorruption(t *testing.T) {
 		t.Fatal("damaged encrypted header accepted")
 	}
 }
+
+func TestImageBufferedReadsSeeksAndSparseTails(t *testing.T) {
+	for _, encrypted := range []bool{false, true} {
+		t.Run(map[bool]string{false: "plain", true: "encrypted"}[encrypted], func(t *testing.T) {
+			key, keyID := []byte(nil), ""
+			if encrypted {
+				key = bytes.Repeat([]byte{7}, 32)
+				keyID = KeyID(key)
+			}
+			file, rid := filepath.Join(t.TempDir(), "buffered.img"), format.NewID().String()
+			img, err := OpenImage(file, true, rid, keyID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = img.SetKey(key); err != nil {
+				t.Fatal(err)
+			}
+			frames := [][]byte{imageFrame(t, format.NewID(), bytes.Repeat([]byte{19}, format.PayloadSize)), imageFrame(t, format.NewID(), []byte("short"))}
+			buf := make([]byte, format.BlockSize)
+			for _, pos := range []uint64{3, 4, 5, 12, 2} {
+				frame := frames[0]
+				if pos == 5 {
+					frame = frames[1]
+				}
+				before := append([]byte(nil), frame...)
+				if err = img.Locate(pos); err != nil {
+					t.Fatal(err)
+				}
+				if err = img.WriteRecord(frame); err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(frame, before) {
+					t.Fatal("writer mutated source frame")
+				}
+				n, e := img.ReadAt(pos, buf)
+				if e != nil || !bytes.Equal(frame, buf[:n]) {
+					t.Fatal("buffered read mismatch", pos, e)
+				}
+			}
+			if err = img.Locate(13); err != nil {
+				t.Fatal(err)
+			}
+			if err = img.Filemark(); err != nil {
+				t.Fatal(err)
+			}
+			if err = img.Close(); err != nil {
+				t.Fatal(err)
+			}
+			img, err = OpenImage(file, false, rid, keyID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer img.Close()
+			if err = img.SetKey(key); err != nil {
+				t.Fatal(err)
+			}
+			for _, pos := range []uint64{2, 3, 4, 5, 12} {
+				frame := frames[0]
+				if pos == 5 {
+					frame = frames[1]
+				}
+				n, e := img.ReadAt(pos, buf)
+				if e != nil || !bytes.Equal(frame, buf[:n]) {
+					t.Fatal("published read mismatch", pos, e)
+				}
+			}
+			if _, e := img.ReadAt(8, buf); e != ErrMissing {
+				t.Fatal("hole became data", e)
+			}
+			if _, e := img.ReadAt(13, buf); e != ErrFilemark {
+				t.Fatal("filemark lost", e)
+			}
+			f, e := os.Open(file)
+			if e != nil {
+				t.Fatal(e)
+			}
+			defer f.Close()
+			tail := make([]byte, 4096)
+			if _, e = f.ReadAt(tail, slot(5)+4096); e != nil || !allZero(tail) {
+				t.Fatal("short slot tail not sparse/zero", e)
+			}
+		})
+	}
+}
+
+func TestImageDrainedRecordsRemainUnpublishedUntilFlush(t *testing.T) {
+	file, rid := filepath.Join(t.TempDir(), "unpublished.img"), format.NewID().String()
+	img, err := OpenImage(file, true, rid, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := imageFrame(t, format.NewID(), make([]byte, format.PayloadSize))
+	for i := 0; i < 7; i++ {
+		if err = img.WriteRecord(frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if st, e := img.f.Stat(); e != nil || st.Size() <= ImageHeaderSize {
+		t.Fatal("buffer never drained", e)
+	}
+	if err = img.f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	img.f = nil
+	reopened, err := OpenImage(file, false, rid, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if reopened.MaxPos() != 0 || reopened.HasObject(0) {
+		t.Fatal("unpublished data claimed durable coverage")
+	}
+}
