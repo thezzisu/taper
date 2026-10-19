@@ -18,6 +18,11 @@ Go 1.26 or newer. The SQLite dependency does not require a C SQLite installation
 go build -o taper ./cmd/taper
 ```
 
+`taper --version` prints the build version without opening a catalog or device.
+For a tagged build, set it with `-ldflags '-X main.version=v1.0.0'`; ordinary
+source builds report `dev`. Binary releases include the embedded dependencies'
+license notices. Tape, image and catalog format versions remain 1.
+
 The archive indexer embeds the official 7-Zip 26.04 engine as a WASI WebAssembly
 module and runs it with wazero. It does not invoke `7z`, require a system 7-Zip
 installation, or use CGO. The pinned bridge build and license texts are in

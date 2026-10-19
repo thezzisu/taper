@@ -144,3 +144,41 @@ pool configuration for qualification. These samples do not guarantee whole-volum
 speed across different disk regions, competing I/O or SSD cache exhaustion. HDD
 throughput has little margin over LTO-6, so SSD capture followed by an offline
 image-to-image transfer remains the preferred workflow on this host.
+
+## Complete-image acceptance
+
+On 2026-10-19 a completed 2.45 TB image containing seven archives was mounted
+read-only through the Linux kernel. This acceptance used only the image and a
+read-only catalog; no physical tape was opened.
+
+| Check | Result |
+|---|---|
+| Original file trees | 58,776 files and 3,143 directories; all paths, sizes, modes and owners matched |
+| Whole-file SHA-256 samples | 22 files, 6,306,212 bytes; matched the catalog |
+| Large-file reads | Small beginning, middle, boundary and tail windows in every archive; repeated/concurrent results matched and EOF was correct |
+| Read-only enforcement | Write-open, create, mkdir, chmod, truncate, rename and unlink returned EROFS |
+| Preservation | Catalog and authentication sidecar hashes, image header hash, size, allocation and modification timestamps unchanged |
+| Resource bounds | HDD reads capped at 4 MiB/s and 8 IOPS; real-image acceptance cgroup peaked at 854,188,032 bytes including page cache |
+
+This is a directory comparison and bounded content sample, not a second complete
+image verification. Source capture and image merging already decoded records and
+checked archive/content digests in their sequential transfer passes.
+
+The opt-in kernel suite also exercises the CLI path from staged files through
+encrypted raw/zstd archives, image merging and both single-archive and whole-set
+mounts. It checks deduplicated aliases, Unicode names, empty files, missing image
+data (ENODATA), corrupted payloads (EIO), read-only private mmap and clean unmount.
+All device endpoints in these tests are simulators. Run in an isolated namespace:
+
+```sh
+unshare --user --map-root-user --mount env TAPER_FUSE_KERNEL=1 \
+  go test -race ./cmd/taper ./internal/fusefs \
+  -run 'TestReplicaSyncEndpointWorkflow|TestKernel' -count=1
+```
+
+Kernel testing caught buffered FUSE reads collapsing ENODATA into EIO. Regular
+files now use FUSE direct I/O while retaining the bounded decoded-block cache and
+buffered image backend. This changes neither the image layout nor the tape format.
+The ZIP64 large-offset fixture uses the standard ZIP writer instead of a raw
+header that omitted required local metadata with Go 1.26. The same offset and
+extracted bytes are checked with both Go 1.26 and Go 1.27.

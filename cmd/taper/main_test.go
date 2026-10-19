@@ -354,13 +354,31 @@ func TestReplicaSyncEndpointWorkflow(t *testing.T) {
 	if e := os.Mkdir(root, 0700); e != nil {
 		t.Fatal(e)
 	}
-	if e := os.WriteFile(filepath.Join(root, "hello"), []byte("replica endpoint flow"), 0600); e != nil {
-		t.Fatal(e)
+	data := bytes.Repeat([]byte("replica endpoint flow\n"), 150000)
+	files := map[string][]byte{"hello": []byte("first archive"), "dir/内容.bin": data, "alias.bin": data, "empty": {}}
+	for path, content := range files {
+		if e := os.MkdirAll(filepath.Dir(filepath.Join(root, path)), 0700); e != nil {
+			t.Fatal(e)
+		}
+		if e := os.WriteFile(filepath.Join(root, path), content, 0600); e != nil {
+			t.Fatal(e)
+		}
 	}
-	must("stage", "add", "--source", root, "--json")
-	must("stage", "plan", "--json")
 	ssd, hdd, capture := filepath.Join(dir, "ssd.img"), filepath.Join(dir, "hdd.img"), filepath.Join(dir, "capture.img")
-	must("stage", "write", "--image", ssd, "--memory", "8388608", "--json")
+	var archives []mountArchive
+	for _, name := range []string{"raw", "compressed"} {
+		must("stage", "add", "--source", root, "--json")
+		var plan struct{ Plan string }
+		if e := json.Unmarshal([]byte(must("stage", "plan", "--name", name, "--json")), &plan); e != nil {
+			t.Fatal(e)
+		}
+		args := []string{"stage", "write", "--image", ssd, "--memory", "8388608", "--json"}
+		if name == "compressed" {
+			args = append(args, "--zstd")
+		}
+		must(args...)
+		archives = append(archives, mountArchive{id: plan.Plan, name: name})
+	}
 	before, _ := os.ReadFile(db)
 	priorOpens := opens
 	for _, args := range [][]string{
@@ -401,4 +419,7 @@ func TestReplicaSyncEndpointWorkflow(t *testing.T) {
 	if _, e := call("replica", "sync", "--from-image", ssd, "--to-image", hdd, "--prune"); e == nil {
 		t.Fatal("image-only prune accepted")
 	}
+	t.Run("kernel mount", func(t *testing.T) {
+		checkImageMount(t, hdd, archives, files)
+	})
 }

@@ -226,7 +226,12 @@ func (t *Tree) dispatch(ctx context.Context, opcode uint32, id uint64, in []byte
 		}
 		b := make([]byte, 16)
 		native.PutUint64(b, id)
-		native.PutUint32(b[8:], 2)
+		if opcode == 14 {
+			// FOPEN_DIRECT_IO preserves ENODATA for missing image blocks.
+			// Buffered FUSE readahead turns read errors into generic EIO.
+			// The reader already bounds and caches decoded blocks.
+			native.PutUint32(b[8:], 1)
+		}
 		return b, 0, false
 	case 15: // READ
 		if n.children != nil {

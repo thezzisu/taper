@@ -59,7 +59,7 @@ func defaultPassFile() string {
 
 func newCommand() *cobra.Command {
 	o := &settings{}
-	root := &cobra.Command{Use: "taper", Short: "Replica sets, sparse images and packed tape archives", SilenceUsage: true, SilenceErrors: true}
+	root := &cobra.Command{Use: "taper", Version: version, Short: "Replica sets, sparse images and packed tape archives", SilenceUsage: true, SilenceErrors: true}
 	root.PersistentFlags().BoolVar(&o.json, "json", false, "emit structured JSON results")
 	group := func(name, desc string) *cobra.Command {
 		c := &cobra.Command{Use: name, Short: desc}

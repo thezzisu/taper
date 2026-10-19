@@ -1,7 +1,7 @@
 # Command reference
 
 The Cobra CLI has English text and one spelling per command, with no aliases.
-Help and shell completion never open a catalog or a drive.
+Help, `--version` and shell completion never open a catalog or a drive.
 
 | Command | Purpose |
 |---|---|

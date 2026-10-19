@@ -161,6 +161,11 @@ EIO. A hole is never returned as successful EOF or zero bytes. Stat/readdir use
 the read-only catalog and do not move tape. Original files are exposed; indexed
 members inside compressed archives remain browsing metadata.
 
+Regular files use FUSE direct I/O so the kernel's buffered readahead cannot turn
+ENODATA into generic EIO. This bypasses the FUSE-file page cache, not the backing
+image's buffered disk reads. The decoded-block LRU remains bounded. Read-only
+private mmap is supported; shared mmap is not enabled.
+
 One selected archive is mounted directly at the root; multiple archives use
 `seq_shortid_name` directories. File offsets map directly to DATA LBAs using
 1048512-byte raw payloads. A bounded decoded-block LRU serves repeated reads.

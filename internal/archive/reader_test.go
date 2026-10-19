@@ -294,11 +294,9 @@ func TestLargeFileOffset(t *testing.T) {
 	sparse := &sparseOutput{file: f}
 	z := zip.NewWriter(sparse)
 	zeroes := make([]byte, 1<<20)
-	h := crc32.NewIEEE()
-	for i := int64(0); i < offset; i += int64(len(zeroes)) {
-		h.Write(zeroes)
-	}
-	padding, err := z.CreateRaw(&zip.FileHeader{Name: "padding", Method: zip.Store, CRC32: h.Sum32(), CompressedSize64: offset, UncompressedSize64: offset})
+	// Let the writer compute ZIP64 sizes and the data descriptor while the
+	// sparse sink skips the padding; raw headers can omit required local fields.
+	padding, err := z.CreateHeader(&zip.FileHeader{Name: "padding", Method: zip.Store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,6 +335,9 @@ func TestLargeFileOffset(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Close()
+	if len(r.Items) != 2 || r.Items[1].Path != "large-offset.txt" {
+		t.Fatalf("invalid ZIP64 fixture: items=%+v, warning=%q", r.Items, r.Warning)
+	}
 	var out bytes.Buffer
 	if err = r.Extract(context.Background(), map[uint32]io.Writer{1: &out}); err != nil {
 		t.Fatal(err)
