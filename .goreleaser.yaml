@@ -1,0 +1,39 @@
+version: 2
+project_name: taper
+
+before:
+  hooks:
+    - sh scripts/release-files.sh
+
+builds:
+  - id: taper
+    main: ./cmd/taper
+    binary: taper
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version=v{{ .Version }}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - NOTICE
+      - docs/**/*.md
+      - licenses/**/*
+      - internal/archive/wasm/README.md
+      - internal/archive/wasm/licenses/**/*
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ .Version }}-dev"
+
+changelog:
+  disable: true

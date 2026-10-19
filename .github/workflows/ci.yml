@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - name: Check source
+        run: make check
+      - name: Test with race detection
+        run: make test
+      - name: Exercise kernel FUSE with simulated tapes
+        run: make integration
+      - name: Fuzz record decoders
+        run: make fuzz
+      - name: Build Linux release targets
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          make build
+          GOARCH=arm64 go build -trimpath -o "$RUNNER_TEMP/taper-arm64" ./cmd/taper

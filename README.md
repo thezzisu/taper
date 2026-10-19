@@ -1,189 +1,160 @@
 # taper
 
-Packed archives for manually loaded LTO tapes, with an encrypted SQLite catalog
-that stays searchable while the tapes are offline. Replica sets share one immutable stream across physical
-cartridges and sparse image caches. Small files share
-1 MiB records, and complete batches can be prepared once then synchronized to
-multiple cartridges.
+[![CI](https://github.com/thezzisu/taper/actions/workflows/ci.yml/badge.svg)](https://github.com/thezzisu/taper/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/thezzisu/taper?include_prereleases)](https://github.com/thezzisu/taper/releases)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-The device backend is Linux-only and uses SG_IO directly in the current process.
-The current hardware qualification is for LTO-6. Select the drive explicitly when
-running a device command; planning recommends tapes from the offline catalog.
+Taper backs up files to manually loaded LTO tapes and keeps an encrypted SQLite
+catalog you can search while the tapes are offline. Replica sets share one
+immutable archive stream across cartridges and sparse disk images. Small files
+share 1 MiB records; complete archives can be prepared on disk and copied to tape.
 
-## Build
+**v0.1.0 is a preview.** The device backend is Linux-only, with hardware
+qualification on LTO-6 and amd64. Linux arm64 binaries are cross-built. See
+[validation](docs/VALIDATION.md) for what has been tested and its limits.
 
-Go 1.26 or newer. The SQLite dependency does not require a C SQLite installation.
+## Install
+
+Download a Linux archive and `checksums.txt` from
+[Releases](https://github.com/thezzisu/taper/releases). Verify the downloaded
+archive before extracting it:
 
 ```sh
-go build -o taper ./cmd/taper
+sha256sum --check --ignore-missing checksums.txt
+tar -xzf taper_0.1.0_linux_amd64.tar.gz
+./taper --version
 ```
 
-`taper --version` prints the build version without opening a catalog or device.
-For a tagged build, set it with `-ldflags '-X main.version=v1.0.0'`; ordinary
-source builds report `dev`. Binary releases include the embedded dependencies'
-license notices. Tape, image and catalog format versions remain 1.
+Or build with Go 1.26 or later; no C compiler or system SQLite is needed:
 
-The archive indexer embeds the official 7-Zip 26.04 engine as a WASI WebAssembly
-module and runs it with wazero. It does not invoke `7z`, require a system 7-Zip
-installation, or use CGO. The pinned bridge build and license texts are in
-`internal/archive/wasm/`. [Archive support](docs/ARCHIVE-SUPPORT.md) lists all
-formats, volume layouts, encryption support and tested limits.
+```sh
+git clone https://github.com/thezzisu/taper.git
+cd taper
+make build
+```
 
-[Commands](docs/COMMANDS.md) lists every implemented command and option.
-[CLI/TUI design](docs/CLI-DESIGN.md) records the implemented command interface
-and the remaining TUI proposal.
+Source builds report `dev`; use `make build VERSION=v0.1.0` to set a version.
+The archive indexer embeds 7-Zip as WASI WebAssembly and does not invoke an
+external `7z` executable. Its [support matrix](docs/ARCHIVE-SUPPORT.md) documents
+formats, multi-volume archives, encryption and indexing limits.
 
 ## First backup
 
-Select the correct SG device before running a tape command. `/dev/sg1` below is
-an example, not a persistent identity. A stable symlink resolving to the SG node
-also works; the usual `/dev/tape/by-id/*-nst` links resolve to a different driver
-interface and cannot be passed to this backend.
+Choose the correct Linux SG device. `/dev/sgN` below is a placeholder; a stable
+symlink to that SG node also works. `/dev/nstN` uses a different driver interface.
+Run taper as your user with device permissions; any elevation happens outside it.
 
 ```sh
 taper catalog init
-taper key generate --name TAPE001 --key-file /private/TAPE001.key --keycard /private/TAPE001.keycard
-# Save the recovery card separately before registering the key.
-taper replica create TAPE001 --key-file /private/TAPE001.key
-taper replica add TAPE001 --device /dev/sg1 --key-file /private/TAPE001.key
+taper key generate --name COLD --key-file /private/cold.key --keycard /private/cold.keycard
+# Save the recovery card separately.
+taper replica create cold --key-file /private/cold.key
+taper replica add cold --device /dev/sgN --label 123456L6
 
-taper stage add --source /data/snapshot --rules /private/rules.json .
-taper stage ls
-taper stage rm unwanted/path
-taper stage plan --replica TAPE001 --name photos
-# If plan reports a locked container, enter its password without echoing it.
-taper stage unlock --remember 'backup.7z'
-# This example allocates a 1 GiB write pool. Size it for the measured source rate.
-taper stage write --device /dev/sg1 --memory 1073741824 --yes
+taper stage add --source /data/snapshot .
+taper stage plan --replica cold --name photos
+taper stage write --image /cache/cold.img
+taper replica sync cold --from-image /cache/cold.img --to-device /dev/sgN
 
 taper archive ls
-taper archive browse ARCHIVE_ID
+taper archive browse photos
 taper catalog export --dest /private/catalog-snapshot
 ```
 
-Keep source files unchanged from `stage add` through planning and all replica
-writes. Taper checks source identity, metadata and streaming hashes; it does not
-freeze files or create filesystem snapshots.
+Keep sources unchanged from staging through writing. `stage rm PATH` removes a
+selection without deleting the source. `stage add --rules FILE` accepts explicit
+include/exclude patterns; taper has no built-in cleanup policy.
 
-A hidden prompt unlocks the catalog. `--pass-file` reads a local passphrase file
-for unattended use. The default catalog is `~/.local/share/taper/catalog.db`;
-`TAPER_CATALOG` overrides it. `TAPER_PASS_FILE` supplies the passphrase file
-through the environment, otherwise an existing `~/.local/share/taper/session.pass`
-is used. Passphrase files must be owner-only (mode 0600), and an unsafe file
-produces an explicit error. Replica key files and `stage unlock --password-file`
-inputs use the same owner-only check.
-Keep credentials and catalog exports outside the source tree. Flags may precede
-or follow positional paths; `--memory` takes an integer byte count. Output is
-human-readable by default. Use `--json` for automation; results go to stdout and
-progress goes to stderr. Redirected output contains no terminal styling.
-The catalog uses schema version 1. Opening another version fails; taper never
-upgrades it or creates missing tables implicitly.
+Planning hashes and deduplicates files, indexes user archives and checks the
+smallest member tape's budget, including archives still owed to that member.
+An image-only write therefore still needs a registered tape with recorded capacity.
+Hardware compression defaults on; optional `stage write --zstd` defaults off.
+Capacity planning assumes no compression gain.
 
-Hardware compression defaults to on when creating a replica set; use
-`replica create NAME --hardware-compression=false` to disable it. Each physical
-write applies the set preference. Optional software zstd defaults off and remains
-independent. Planning assumes no hardware compression gain.
-
-## Staging and tape choice
-
-One catalog has one staging area with one source root. `stage add` records files;
-adding a directory again refreshes that selection. `stage rm` changes the
-selection, and `stage rm .` clears it. Neither deletes source files.
-
-`stage plan` binds the selection to a replica set, hashes and deduplicates it,
-indexes user archives and checks the smallest member budget after accounting
-for missing physical replicas. It assigns an immutable stream ID and batch positions.
-Repeating a current plan reuses it; interrupted hashing resumes from checkpoints.
-
-Deep indexing follows packaging layers: `backup.zip!/game.rar!/OST.zip!/track.flac`.
-Only conventional archive suffixes enter this recursion. Programs (including
-self-extracting EXE files), APK/JAR packages, installers, documents, media and disk
-images remain ordinary files at every level. Taper does not inspect arbitrary
-files for archive signatures. It preserves all original bytes regardless of
-whether it builds an inner tree; these rules do not exclude files from backup.
-
-If an archive is encrypted, planning records its visible state and continues.
-Use `stage unlock PATH` with a hidden prompt or `--password-file`; add
-`--remember` only when the password should be retained in the encrypted catalog.
-
-`stage write` accepts `--image`, `--device`, or both. With both, it completes the
-image first and streams those same records to tape. A successful complete batch
-clears the stage immediately. `replica sync` copies complete archives between
-devices and images using one source and one destination flag. For example,
-`replica sync --from-image cache.img --to-device /dev/sgN` copies a member's
-missing suffix. `replica sync --from-device /dev/sgN --to-image cache.img` fills
-a sparse image without changing SQLite. `--prune` releases only source image
-batches committed on every member after an image-to-device transfer. A durable
-physical replica is distinct from one that has been read-verified.
-
-Rules contain explicit include/exclude patterns. There are no built-in trash,
-software, or course-material exclusions:
-
-```json
-{"include": [], "exclude": ["path/to/exclude/**"]}
-```
-
-A nonempty include list limits the selection; exclusions subtract from it.
-`**` matches directory components, and `*` and `?` match within a component.
-File selection, SSD caching, cloud transfers, source cleanup, disk formatting,
-and process supervision remain external operations.
-
-## Browse and verify
-
-`archive browse ARCHIVE` displays a committed archive from the catalog without a tape.
-`ARCHIVE` may be a full ID, a unique ID prefix, or the exact archive name. Use
-`stage ls` for selections that have not been written. `archive browse ARCHIVE --tui`
-currently opens a small numbered terminal menu for one archive; it is not a full
-backup interface. Command names have one spelling, with no aliases.
-`replica mount` exposes original archived files through read-only FUSE, from an
-image, a device with an image, or a device with a temporary sparse cache.
-`tape reindex` rebuilds catalog metadata in one full tape pass.
-
-`tape verify` checks a whole tape by default. Use `--archive ID` for one archive or `--archive FIRST-LAST` for an inclusive
-contiguous range; unique hex prefixes of at least six characters are accepted.
-The IDs must have unique committed replicas on the loaded tape. The preview
-lists every selected archive, its logical object range, boundary checks and EOD
-check. It prompts once; `--yes` (`-y`) skips the prompt and `--dry-run` (`-n`)
-shows the plan without moving the tape. Non-interactive execution needs `--yes`.
+## Images, browsing and recovery
 
 ```sh
-taper tape verify --device /dev/sg1 --dry-run --archive FIRST_ID-LAST_ID
-GOMEMLIMIT=10GiB taper tape verify --device /dev/sg1 --memory 8589934592 --yes --archive FIRST_ID-LAST_ID
-# Exact scope and results for scripts:
-taper tape verify --device /dev/sg1 --dry-run --json --archive FIRST_ID-LAST_ID
+# Capture once, then merge caches without another tape read.
+taper replica sync cold --from-device /dev/sgN --to-image /ssd/cold.img
+taper replica sync cold --from-image /ssd/cold.img --to-image /hdd/cold.img
+
+# Offline metadata, including nested archive paths.
+taper archive browse photos --tui
+
+# Mount original files read-only; requires mount permission supplied externally.
+taper replica mount cold /mount/point --image /hdd/cold.img
 ```
 
-Each verification uses one locate and one forward read. The reader is bounded
-at the selected last filemark; when that is the last committed archive, it makes
-one additional read to require EOD. It never reads on into an unexpected tail.
-Only a completely successful range updates its selected replicas. Failures stop
-without retry. Full verification also checks the public label at BOT.
+Images can be sparse. Offline missing blocks return `ENODATA`; damaged data
+returns `EIO`. With `--device`, mounting can fill missing ranges using bounded
+caching and coalesced reads. Multiple archives appear under separate directories;
+`--archive ID` mounts one directly at the root.
 
-`tape reindex` remains a complete BOT-to-EOD recovery pass. Neither command runs
-automatically after writing. Use an appropriate read pool; on the qualified host,
-8 GiB with a 10 GiB Go runtime soft limit works. Terminal progress displays rate,
-elapsed time and a bounded progress bar; redirected progress is periodic text.
-Tape labels use an IBM-style color strip when the terminal supports color;
-`NO_COLOR=1` disables it. JSON always contains plain strings.
+Deep indexing follows archive layers such as `backup.zip!/game.rar!/OST/track.flac`.
+Documents, applications and disk images stay ordinary files. Locked containers
+can be indexed with `stage unlock PATH`; `--remember` saves the password in the
+encrypted catalog. Original archive bytes are always preserved.
 
-## Format and recovery limits
+`tape verify` reads the whole tape or an explicit `--archive FIRST[-LAST]` range
+once. `tape reindex` rebuilds metadata in one full pass. Neither runs automatically
+after writing. Qualify the complete I/O path before using tape, and choose a
+memory pool that keeps the drive streaming; `--memory` is not a process RSS limit.
 
-Each replica fits one tape and has no content dependencies on another archive.
-MAM cartridge memory identifies initialized media during append, so an append
-never falls back to rewinding and reading the tape label.
+## CLI and configuration
 
-Tape sidecars preserve paths and lengths. Content hashes are recomputed when
-reading and checked through the archive digest. File mtimes, original source
-information and selection rules live in the external catalog. Permissions,
-ownership, empty directories and sparse-file layout are not preserved by v1.
+Commands use English text and one spelling, with no aliases. `--help` lists
+options. Human output includes scope previews and progress; `--json` provides
+structured stdout with progress on stderr. Tape movement prompts once;
+`-y/--yes` confirms and `-n/--dry-run` previews without moving tape or changing data.
 
-Keep the encrypted catalog export and tape recovery key separately. The catalog
-passphrase and tape key have different roles: changing the former does not
-change the latter, and recovering an encrypted tape without its key is impossible.
+| Setting | Flag | Environment / default |
+|---|---|---|
+| Catalog | `--catalog` | `TAPER_CATALOG`, otherwise `$XDG_DATA_HOME/taper/catalog.db` or `~/.local/share/taper/catalog.db` |
+| Passphrase file | `--pass-file` | `TAPER_PASS_FILE`, otherwise an existing secure `session.pass` in the default data directory |
+
+Explicit flags take precedence. Without a passphrase file, taper prompts without
+echoing. Passphrase, key and archive-password files must be private (`chmod 600`);
+unsafe permissions produce an error.
+
+Keep catalog exports and recovery keys separately. The catalog passphrase and
+replica encryption key have different roles. Tape, image and catalog formats
+remain version 1; unsupported schemas are rejected without automatic migration.
+Format v1 does not preserve permissions, ownership, empty directories or original
+sparse-file layout. Image encryption is XChaCha20 with CRC checks, not AEAD.
 
 - [Command reference](docs/COMMANDS.md)
+- [Replica sets, images and FUSE](docs/IMAGES.md)
 - [Operation and recovery](docs/OPERATIONS.md)
-- [Tape format v1](docs/FORMAT.md)
-- [Validation and measured limits](docs/VALIDATION.md)
-- [Proposed CLI/TUI design](docs/CLI-DESIGN.md)
-- [Replica sets, sparse images and FUSE](docs/IMAGES.md)
+- [Tape format](docs/FORMAT.md)
+- [Validation](docs/VALIDATION.md)
+
+## Development and releases
+
+```sh
+make check        # formatting, module consistency and go vet
+make test         # tests with race detection; no physical tape access
+make integration  # actual kernel FUSE with simulated tapes; needs sudo
+make fuzz         # bounded decoder fuzzing
+make build
+```
+
+After CI passes on `main`, add release notes at `docs/releases/vX.Y.Z.md` in the
+tested commit, then push an annotated tag. Do not reuse a tag:
+
+```sh
+git tag -a vX.Y.Z -m 'Release vX.Y.Z'
+git push origin vX.Y.Z
+```
+
+The release workflow requires successful CI for that commit. GoReleaser builds
+static Linux amd64/arm64 archives with dependency licenses and SHA-256 checksums.
+All `v0.*` and suffixed tags are published as prereleases. The release workflow
+does not rerun CI or access physical tape.
+
+## License
+
+[Apache License 2.0](LICENSE), downloaded from the
+[Apache Software Foundation](https://www.apache.org/licenses/LICENSE-2.0.txt).
+Third-party components retain their own licenses; see [NOTICE](NOTICE) and the
+[embedded 7-Zip notices](internal/archive/wasm/licenses/7zip.txt). Binary archives
+include Go dependency, 7-Zip and WASI license notices.

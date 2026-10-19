@@ -35,7 +35,7 @@ independent entry, depth, expansion and filename limits.
 
 The licenses for embedded upstream code are in `licenses/`: 7-Zip LGPL/BSD
 terms, the unRAR restriction, and the SDK license material. `Taper.cpp` is the
-small taper-specific bridge and is MIT licensed with the repository.
+small taper-specific bridge and is Apache-2.0 licensed with the repository.
 SDK runtime notices under `licenses/wasi/` correspond to wasi-libc
 `2e6fb9d8ee0cdf9e431fbcabe8af3115de000a13` and LLVM
 `895aa2c896ada719451be2e3673c83da8ddf1141`, as recorded in SDK 34.0's `VERSION`.

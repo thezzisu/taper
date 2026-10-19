@@ -1,5 +1,7 @@
 /taper
 /dist/
+/.local/
+/licenses/
 *.db*
 *.unlock
 *.tcat
