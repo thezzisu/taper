@@ -1,9 +1,0 @@
-taper
-Copyright 2026 thezzisu
-
-Licensed under the Apache License, Version 2.0. See LICENSE.
-Third-party components retain their own copyrights and licenses. Binary
-release archives include Go dependency notices in licenses/ and embedded
-7-Zip/WASI notices in internal/archive/wasm/licenses/.
-The embedded 7-Zip engine includes LGPL/BSD code and the unRAR restriction;
-its source and rebuild instructions are documented in internal/archive/wasm/.

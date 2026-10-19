@@ -57,5 +57,5 @@ jobs:
             flags=(--prerelease --latest=false)
           fi
           gh release create "$RELEASE_TAG" --verify-tag --title "taper $RELEASE_TAG" \
-            --notes-file "docs/releases/$RELEASE_TAG.md" "${flags[@]}" \
+            --generate-notes "${flags[@]}" \
             dist/*.tar.gz dist/checksums.txt

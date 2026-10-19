@@ -23,9 +23,7 @@ archives:
     files:
       - README.md
       - LICENSE
-      - NOTICE
       - docs/*.md
-      - docs/**/*.md
       - licenses/**/*
       - licenses/Go-LICENSE
       - internal/archive/wasm/README.md

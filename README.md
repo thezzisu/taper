@@ -138,8 +138,7 @@ make fuzz         # bounded decoder fuzzing
 make build
 ```
 
-After CI passes on `main`, add release notes at `docs/releases/vX.Y.Z.md` in the
-tested commit, then push an annotated tag. Do not reuse a tag:
+After CI passes on `main`, push an annotated tag for that commit. Do not reuse a tag:
 
 ```sh
 git tag -a vX.Y.Z -m 'Release vX.Y.Z'
@@ -149,12 +148,14 @@ git push origin vX.Y.Z
 The release workflow requires successful CI for that commit. GoReleaser builds
 static Linux amd64/arm64 archives with dependency licenses and SHA-256 checksums.
 All `v0.*` and suffixed tags are published as prereleases. The release workflow
-does not rerun CI or access physical tape.
+generates release notes from GitHub and does not rerun CI or access physical tape.
 
 ## License
 
+Copyright 2026 thezzisu.
+
 [Apache License 2.0](LICENSE), downloaded from the
 [Apache Software Foundation](https://www.apache.org/licenses/LICENSE-2.0.txt).
-Third-party components retain their own licenses; see [NOTICE](NOTICE) and the
+Third-party components retain their own licenses; see the
 [embedded 7-Zip notices](internal/archive/wasm/licenses/7zip.txt). Binary archives
 include Go dependency, 7-Zip and WASI license notices.
